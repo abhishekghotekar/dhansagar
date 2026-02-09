@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AquaFlow CRM | Business Intelligence</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <script type="module" src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.esm.js"></script>
+    <script nomodule src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.js"></script>
+    
+    <!-- Theme CSS (v13 used updated style.css) -->
+    <link rel="stylesheet" href="/static/style.css?v=13">
+</head>
+<body>
+
+    <!-- 1. Navigation Bar -->
+    <nav class="navbar">
+        <div class="brand">
+            <ion-icon name="water"></ion-icon>
+            <span>AquaFlow CRM</span>
+        </div>
+        <button id="openAddModalBtn" class="btn-primary">
+            <ion-icon name="add-circle"></ion-icon>
+            Add New Customer
+        </button>
+    </nav>
+
+    <!-- 2. Main Dashboard Container -->
+    <div class="main-container">
+
+        <!-- Hero Card -->
+        <div class="hero-card fade-in">
+            <div class="hero-icon">
+                <ion-icon name="analytics"></ion-icon>
+            </div>
+            <div>
+                <h2>Business Intelligence</h2>
+                <p>Track your customer jars, revenue, and pending payments in real-time.</p>
+            </div>
+        </div>
+        
+        <!-- Stats Grid -->
+        <div class="stats-grid fade-in-up">
+            <div class="stat-card">
+                <div class="stat-icon blue"><ion-icon name="water-outline"></ion-icon></div>
+                <div class="stat-info"><span>Total Jars</span><strong id="totalJars">0</strong></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon purple"><ion-icon name="people-outline"></ion-icon></div>
+                <div class="stat-info"><span>Customers</span><strong id="totalCustomers">0</strong></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon green"><ion-icon name="cash-outline"></ion-icon></div>
+                <div class="stat-info"><span>Revenue</span><strong id="totalRevenue">$0</strong></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon red"><ion-icon name="alert-circle-outline"></ion-icon></div>
+                <div class="stat-info"><span>Pending</span><strong id="totalPending">$0</strong></div>
+            </div>
+        </div>
+
+        <!-- Customer Table -->
+        <div class="table-container fade-in-up">
+            <div class="table-header">
+                <h3>Customer Records</h3>
+                <div class="search-wrapper">
+                    <ion-icon name="search-outline"></ion-icon>
+                    <input type="text" id="searchInput" placeholder="Search customers...">
+                </div>
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th width="10%">Date</th>
+                        <th width="18%">Name</th>
+                        <th width="22%">Address</th>
+                        <th width="10%">Phone</th>
+                        <th width="8%">Status</th>
+                        <th width="24%">Metrics</th>
+                        <th width="8%">Last Updated</th>
+                        <th class="text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="customerTableBody">
+                    <!-- Data injected via JS -->
+                </tbody>
+            </table>
+        </div>
+
+    </div>
+
+    <!-- 3. Add/Edit Customer Modal -->
+    <div id="customerModal" class="modal-overlay">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <ion-icon name="person-add-outline"></ion-icon>
+                    <span id="modalTitle">New Customer</span>
+                </div>
+                <button id="closeModalBtn" class="close-btn"><ion-icon name="close-outline"></ion-icon></button>
+            </div>
+            
+            <form id="customerForm">
+                <input type="hidden" id="customerId">
+
+                <div class="form-body">
+                    <!-- Date Input -->
+                    <div class="form-group">
+                        <label for="date">Date</label>
+                        <input type="date" id="date">
+                    </div>
+
+                    <!-- Name -->
+                    <div class="form-group">
+                        <label for="customer_name">Customer Name</label>
+                        <input type="text" id="customer_name" required placeholder="e.g. John Doe">
+                    </div>
+
+                    <!-- Address -->
+                    <div class="form-group">
+                        <label for="customer_address">Address</label>
+                        <textarea id="customer_address" rows="1" required placeholder="e.g. 123 Water Street, City"></textarea>
+                    </div>
+
+                    <!-- Phone & Status (Grid) -->
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="customer_number">Phone Number</label>
+                            <input type="tel" id="customer_number" required placeholder="(555) 000-0000">
+                        </div>
+                        <div class="form-group">
+                            <label for="success">Status</label>
+                            <select id="success">
+                                <option value="true">Active</option>
+                                <option value="false">Pending</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Metrics (Grid) -->
+                    <div class="form-grid-3">
+                        <div class="form-group">
+                            <label for="jar">Jar Count</label>
+                            <input type="number" id="jar" value="0" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="paid">Paid ($)</label>
+                            <input type="number" id="paid" value="0.00" step="0.01" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="pending">Pending ($)</label>
+                            <input type="number" id="pending" value="0.00" step="0.01" min="0">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn-secondary" id="cancelBtn">Cancel</button>
+                    <button type="submit" class="btn-primary">
+                        <ion-icon name="checkmark-circle"></ion-icon> Save Customer
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Script with cache busting -->
+    <script src="/static/script.js?v=9"></script>
+</body>
+</html>
