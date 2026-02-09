@@ -560,22 +560,101 @@ input:focus, textarea:focus, select:focus {
 }
 
 /* Mobile Responsiveness */
-@media (max-width: 640px) {
+@media (max-width: 1024px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr); /* 2 columns on tablets */
+  }
+}
+
+@media (max-width: 768px) {
+  .navbar {
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1rem;
+    align-items: stretch;
+  }
+
+  .brand {
+    justify-content: center;
+  }
+
+  .btn-primary {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .main-container {
+    padding: 0 1rem;
+  }
+
+  .hero-card {
+    flex-direction: column;
+    text-align: center;
+    padding: 1.5rem;
+    gap: 1rem;
+  }
+
+  .table-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1rem;
+  }
+
+  .search-wrapper {
+    width: 100%;
+  }
+
+  /* Table Horizontal Scroll */
+  .table-container {
+    padding: 1rem;
+    overflow-x: auto;
+  }
+  
+  /* Min width for table to ensure it doesn't squish too much */
+  .data-table {
+    min-width: 800px; 
+  }
+
+  /* Modal Adjustments */
   .modal-overlay {
     padding: 1rem;
+    align-items: flex-end; /* Sheet-like on mobile? Or centered? sticking to centered for now */
   }
+
   .modal-card {
     width: 100%;
-    max-width: 100%;
+    margin: 0;
+    max-height: 90vh; /* Prevent overflow */
+    border-radius: 20px;
   }
+
   .form-row, .form-grid-3 {
     grid-template-columns: 1fr;
-    gap: 0.8rem;
+    gap: 1rem;
   }
-  .form-body, .modal-header, .modal-footer {
-    padding: 1rem 1.2rem;
+
+  .modal-footer {
+    flex-direction: column-reverse; /* Put primary action on top/bottom clearly */
   }
-  .form-group {
-    margin-bottom: 0.8rem;
+
+  .btn-secondary, .btn-primary {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .stats-grid {
+    grid-template-columns: 1fr; /* 1 column on mobile */
+  }
+
+  .hero-icon {
+    width: 50px;
+    height: 50px;
+    font-size: 1.5rem;
+  }
+
+  .hero-content h2 {
+    font-size: 1.2rem;
   }
 }
