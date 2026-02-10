@@ -70,12 +70,14 @@ function openModal(isEdit, customerId = null) {
         document.getElementById('paid').value = data.paid || 0.0;
         document.getElementById('pending').value = data.pending || 0.0;
         document.getElementById('success').value = data.success ? 'true' : 'false';
+        document.getElementById('is_monthly').checked = data.is_monthly || false;
     } else {
         title.textContent = 'New Customer';
         form.reset();
         document.getElementById('customerId').value = '';
         // Default to today
         document.getElementById('date').value = new Date().toISOString().split('T')[0];
+        document.getElementById('is_monthly').checked = false;
     }
 
     // Add active class for animation
@@ -111,7 +113,8 @@ async function handleFormSubmit(e) {
         jar: parseInt(document.getElementById('jar').value) || 0,
         paid: parseFloat(document.getElementById('paid').value) || 0.0,
         pending: parseFloat(document.getElementById('pending').value) || 0.0,
-        success: document.getElementById('success').value === 'true'
+        success: document.getElementById('success').value === 'true',
+        is_monthly: document.getElementById('is_monthly').checked
     };
 
     const endpoint = isEdit ? `${API_BASE}/update/${id}` : `${API_BASE}/add-customer`;

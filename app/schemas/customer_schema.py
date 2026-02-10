@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from datetime import datetime
 
 class Customer(BaseModel):
     customer_name: str = Field(..., example="Avinash")
@@ -9,3 +10,18 @@ class Customer(BaseModel):
     pending: float = 0.0
     success: bool = False
     date: str | None = None
+    is_monthly: bool = False
+
+    class Config:
+        from_attributes = True
+
+class CustomerUpdate(BaseModel):
+    customer_name: str | None = None
+    customer_address: str | None = None
+    customer_number: str | None = None
+    jar: int | None = None
+    paid: float | None = None
+    pending: float | None = None
+    success: bool | None = None
+    date: str | None = None
+    is_monthly: bool | None = None

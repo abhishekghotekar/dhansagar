@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Ledger | AquaFlow</title>
+   
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <script type="module" src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.esm.js"></script>
+    <script nomodule src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.js"></script>
+    
+    <!-- Theme CSS -->
+    <link rel="stylesheet" href="/static/style.css?v=20">
+</head>
+<body>
+
+    <!-- Navigation Bar -->
+    <nav class="navbar">
+        <a href="/" style="text-decoration: none; color: inherit;">
+            <div class="brand">
+                <ion-icon name="water"></ion-icon>
+                <span>AquaFlow CRM</span>
+            </div>
+        </a>
+        <div style="margin-left: auto;">
+             <a href="/static/monthly.html" class="btn-secondary">
+                <ion-icon name="arrow-back-outline"></ion-icon> Back to List
+            </a>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="main-container">
+
+        <!-- Header -->
+        <div class="header-wrapper" style="margin-bottom: 2rem;">
+            <h1>Customer Ledger</h1>
+            <p id="customerName">Loading...</p>
+        </div>
+
+        <!-- Stats Grid -->
+        <div class="stats-grid fare-in-up">
+            <div class="stat-card">
+                 <div class="stat-icon blue"><ion-icon name="water-outline"></ion-icon></div>
+                 <div class="stat-info"><span>Total Jars</span><strong id="totalJars">0</strong></div>
+            </div>
+             <div class="stat-card">
+                 <div class="stat-icon green"><ion-icon name="cash-outline"></ion-icon></div>
+                 <div class="stat-info"><span>Total Amount</span><strong id="totalAmount">₹0</strong></div>
+            </div>
+            <div class="stat-card" style="cursor: pointer; background: #ecfdf5; border: 1px solid #10b981;" onclick="openPaymentModal()">
+                 <div class="stat-icon green"><ion-icon name="wallet-outline"></ion-icon></div>
+                 <div class="stat-info"><span style="color: #059669;">Settle Payment</span><strong>Record Cash In</strong></div>
+            </div>
+             <div class="stat-card action-card" onclick="openTxnModal(false)">
+                 <div class="stat-icon purple"><ion-icon name="add-outline"></ion-icon></div>
+                 <div class="stat-info"><span style="color: #6366f1;">Add New Entry</span><strong>Record Transaction</strong></div>
+            </div>
+        </div>
+
+        <!-- Transaction List -->
+        <div class="table-container fade-in-up">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th width="15%">Date</th>
+                        <th width="25%">Description</th>
+                        <th width="15%" class="text-right">Jars</th>
+                        <th width="15%" class="text-right">Debit (Cost)</th>
+                        <th width="15%" class="text-right">Credit (Paid)</th>
+                        <th width="15%" class="text-right">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="txnTableBody">
+                    <tr><td colspan="6" class="text-center">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+    </div>
+
+    <!-- Add/Edit Transaction Modal -->
+    <div id="txnModal" class="modal-overlay">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <ion-icon name="document-text-outline"></ion-icon>
+                    <span id="modalTitle">Add Entry</span>
+                </div>
+                <button onclick="closeTxnModal()" class="close-btn"><ion-icon name="close-outline"></ion-icon></button>
+            </div>
+            
+            <form id="txnForm">
+                <input type="hidden" id="txnId">
+                <div class="form-body">
+                    <div class="form-group">
+                        <label for="txnDate">Date</label>
+                        <input type="date" id="txnDate" required>
+                    </div>
+                    <div class="form-group">
+                         <label for="txnJars">Number of Jars</label>
+                         <input type="number" id="txnJars" value="0" min="0">
+                    </div>
+                    <div class="form-group">
+                         <label for="txnAmount">Amount (₹)</label>
+                         <input type="number" id="txnAmount" value="0.00" step="0.01" min="0">
+                         <small style="color: #64748b;">Enter positive value for Cost/Due.</small>
+                    </div>
+                     <div class="form-group">
+                         <label for="txnDesc">Description (Optional)</label>
+                         <input type="text" id="txnDesc" placeholder="e.g. Regular delivery">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-secondary" onclick="closeTxnModal()">Cancel</button>
+                    <button type="submit" class="btn-primary">Save Entry</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Payment Modal -->
+    <div id="payModal" class="modal-overlay">
+        <div class="modal-card">
+             <div class="modal-header">
+                <div class="modal-title">
+                    <ion-icon name="wallet-outline"></ion-icon>
+                    <span>Record Payment</span>
+                </div>
+                <button onclick="closePayModal()" class="close-btn"><ion-icon name="close-outline"></ion-icon></button>
+            </div>
+            <form id="payForm">
+                <div class="form-body">
+                    <div class="form-group">
+                        <label>Date</label>
+                        <input type="date" id="payDate" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Amount Received (₹)</label>
+                        <input type="number" id="payAmount" min="0" step="1" required placeholder="e.g. 500">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                     <button type="button" class="btn-secondary" onclick="closePayModal()">Cancel</button>
+                     <button type="submit" class="btn-primary" style="background: #10b981;">Confirm Payment</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = "";
+        const urlParams = new URLSearchParams(window.location.search);
+        const customerId = urlParams.get('id');
+        let currentTxns = [];
+
+        document.addEventListener('DOMContentLoaded', () => {
+             if (customerId) {
+                 fetchTransactions();
+             } else {
+                 alert("No customer ID found");
+                 window.location.href = '/static/monthly.html';
+             }
+             
+             document.getElementById('txnForm').addEventListener('submit', handleTxnSubmit);
+             document.getElementById('payForm').addEventListener('submit', handlePaySubmit);
+             
+             // Set default dates
+             const today = new Date().toISOString().split('T')[0];
+             document.getElementById('txnDate').value = today;
+             document.getElementById('payDate').value = today;
+        });
+
+        async function fetchTransactions() {
+             try {
+                 const res = await fetch(`${API_BASE}/monthly/transactions/${customerId}`);
+                 const data = await res.json();
+                 
+                 // Render Summary
+                 document.getElementById('totalJars').textContent = data.summary.total_jars;
+                 
+                 // Total Amount Logic: Sum of Jars Cost - Payments? 
+                 // Currently API just sums 'amount'. 
+                 // If we use positive for Cost and Negative for Payment:
+                 // Then Sum is the BALANCE DUE.
+                 // Let's assume the user wants access to Balance.
+                 document.getElementById('totalAmount').textContent = '₹' + data.summary.total_amount;
+                 document.getElementById('customerName').textContent = data.summary.customer_name; 
+
+                 renderTxnTable(data.transactions);
+                 currentTxns = data.transactions;
+                 
+             } catch (err) {
+                 console.error(err);
+             }
+        }
+
+        function renderTxnTable(txns) {
+            const tbody = document.getElementById('txnTableBody');
+            tbody.innerHTML = '';
+
+            if(!txns || txns.length === 0) {
+                 tbody.innerHTML = '<tr><td colspan="6" class="text-center">No records found.</td></tr>';
+                 return;
+            }
+
+            txns.forEach(t => {
+                const tr = document.createElement('tr');
+                const date = new Date(t.date).toLocaleDateString();
+                
+                // Logic for Credit/Debit
+                // If amount is negative, it's Credit (Paid). Or if logic is reversed?
+                // Standard: Bill (Debit) is Pos, Payment (Credit) is Neg.
+                // Let's display absolute values in columns
+                
+                let debit = '-', credit = '-';
+                let amountStyle = '';
+                
+                // Heuristic: If Amount < 0, it's a payment.
+                // If Amount > 0, it's a cost.
+                // Wait, in previous step `vector_service` logic:
+                // paid_diff > 0 -> Means PAID increased. 
+                // Currently TransactionModel stores `amount`.
+                // If `paid` increases, `amount` increases.
+                // So POSITIVE means PAYMENT?
+                // Let's check `vector_service` again:
+                // `amount=paid_diff`. If paid_diff is +20 (user paid 20), amount is +20.
+                // So POSITIVE = PAID.
+                // But wait, user prompt "how many amount" usuall means COST.
+                // And "1 jar 20 jama" -> 20 deposited.
+                
+                // Let's assume POSITIVE = PAID (Credit).
+                // Then COST (Debit) must be tracked separately?
+                // Or maybe we use logic: Jars * Rate = Cost?
+                // The current system only stores `jar_count` and `amount`.
+                // If `jar_count` > 0 and `amount` = 0, it's just jars.
+                // If `jar_count` = 0 and `amount` > 0, it's payment.
+                
+                // Let's display:
+                // Jars: t.jar_count
+                // Credit (Paid): t.amount (if > 0)
+                // Debit (Cost): ?? We don't store Rate yet.
+                // Maybe the user enters RATE in amount?
+                // "how many amount" might mean BILL AMOUNT.
+                
+                // Let's just output raw amount for now in one column or try to split.
+                // If Jars > 0, Amount likely represents Cost?
+                // If Jars = 0, Amount likely represents Payment?
+                
+                // Let's stick to user request: "which days how many jar and how many amount"
+                // So just show columns: Date | Jars | Amount.
+                // And adding "Credit/Debit" headers might confuse if we aren't sure.
+                
+                // Modified Plan: Just columns: Date | Desc | Jars | Amount | Action.
+                // Amount can be interpreted by user.
+                
+                // Reverting to simpler table but better styled.
+                // Actually, let's keep Credit/Debit if we can infer:
+                // If jar_count > 0, likely Debit? 
+                // But user might add "1 jar, 20 Rs" -> 20 Rs COST.
+                // user might add "0 jars, 500 Rs" -> PAYMENT? Or COST?
+                
+                // Let's look at `vector_service` again.
+                // `paid_diff` -> `amount`.
+                // `paid` in CustomerModel implies "Total Amount Paid by Customer".
+                // So specific transactions increasing `paid` are PAYMENTS.
+                
+                // So POSITIVE amount = PAYMENT.
+                // But what about COST?
+                // The user says "1 jar 20 jama" -> 1 Jar, 20 Paid.
+                // The System doesn't seem to track "Cost" explicitly in `CustomerModel` (only `jar` count, `paid` amount, `pending` amount).
+                // `pending` usually = (Jars * Rate) - Paid.
+                // But we don't have Rate. We have explicit `pending`.
+                
+                // So a transaction likely affects `pending` or `paid`.
+                // Let's show:
+                // Jars | Amount (Paid)
+                // Because `amount` maps to `paid` column in `CustomerModel`.
+                
+                // But wait, `monthly_detail` logic sums `amount`.
+                // If `amount` = Paid, then Total Amount = Total Paid.
+                // This makes sense.
+                // So we need a way to track "Cost" or "Pending"?
+                // The API shows `total_jars` and `total_amount`.
+                // User wants "proper all days... how many jar and how many amount".
+                // "Amount" usually means Money.
+                
+                // Conclusion: The TABLE shows Jars and Money Paid.
+                // The "Settle Payment" button adds a record with Positive Amount.
+                // If we want to track "Pending", we need to know the cost.
+                // Since this is a simple app, maybe "Amount" column is just "Money Transaction".
+                
+                // Let's render:
+                // Jars | Amount
+                
+                const trContent = `
+                    <td>${date}</td>
+                    <td>${t.description || '-'}</td>
+                    <td class="text-right" style="font-weight:600;">${t.jar_count > 0 ? t.jar_count : '-'}</td>
+                    <td class="text-right" style="color: ${t.amount > 0 ? '#10b981' : '#64748b'}; font-weight: 600;">
+                        ${t.amount !== 0 ? '₹'+Math.abs(t.amount) : '-'}
+                        ${t.amount > 0 ? '(Paid)' : ''}
+                    </td>
+                    <td class="text-right">
+                        <button class="btn-icon" onclick="openTxnModal(true, ${t.id})">
+                             <ion-icon name="create-outline"></ion-icon>
+                        </button>
+                        <button class="btn-icon danger" onclick="deleteTxn(${t.id})">
+                             <ion-icon name="trash-outline"></ion-icon>
+                        </button>
+                    </td>
+                `;
+                tr.innerHTML = trContent;
+                tbody.appendChild(tr);
+            });
+        }
+        
+        // Modal Logic
+        function openTxnModal(isEdit, id = null) {
+            const modal = document.getElementById('txnModal');
+            const title = document.getElementById('modalTitle');
+            const form = document.getElementById('txnForm');
+            
+            if (isEdit) {
+                 const txn = currentTxns.find(t => t.id === id);
+                 if (txn) {
+                     title.textContent = 'Edit Entry';
+                     document.getElementById('txnId').value = txn.id;
+                     document.getElementById('txnDate').value = new Date(txn.date).toISOString().split('T')[0];
+                     document.getElementById('txnJars').value = txn.jar_count;
+                     document.getElementById('txnAmount').value = txn.amount;
+                     document.getElementById('txnDesc').value = txn.description || '';
+                 }
+            } else {
+                 title.textContent = 'Add Entry';
+                 form.reset();
+                 document.getElementById('txnId').value = '';
+                 document.getElementById('txnDate').value = new Date().toISOString().split('T')[0];
+            }
+            
+            modal.style.display = 'flex';
+            setTimeout(() => modal.classList.add('active'), 10);
+        }
+
+        function closeTxnModal() {
+            const modal = document.getElementById('txnModal');
+            modal.classList.remove('active');
+            setTimeout(() => modal.style.display = 'none', 300);
+        }
+        
+        // Payment Modal
+        function openPaymentModal() {
+             const modal = document.getElementById('payModal');
+             document.getElementById('payDate').value = new Date().toISOString().split('T')[0];
+             document.getElementById('payAmount').value = '';
+             modal.style.display = 'flex';
+             setTimeout(() => modal.classList.add('active'), 10);
+        }
+        
+        function closePayModal() {
+            const modal = document.getElementById('payModal');
+            modal.classList.remove('active');
+            setTimeout(() => modal.style.display = 'none', 300);
+        }
+
+        async function handleTxnSubmit(e) {
+             e.preventDefault();
+             // [Same logic as before]
+             const id = document.getElementById('txnId').value;
+             const isEdit = !!id;
+             const payload = {
+                 customer_id: customerId,
+                 date: document.getElementById('txnDate').value,
+                 jar_count: parseInt(document.getElementById('txnJars').value),
+                 amount: parseFloat(document.getElementById('txnAmount').value),
+                 description: document.getElementById('txnDesc').value
+             };
+             
+             saveTxn(payload, isEdit, id);
+        }
+        
+        async function handlePaySubmit(e) {
+            e.preventDefault();
+            const payload = {
+                customer_id: customerId,
+                date: document.getElementById('payDate').value,
+                jar_count: 0,
+                amount: parseFloat(document.getElementById('payAmount').value),
+                description: 'Payment Received'
+            };
+            saveTxn(payload, false, null, true); // True = Payment modal
+        }
+        
+        async function saveTxn(payload, isEdit, id, isPayModal = false) {
+             const endpoint = isEdit ? `${API_BASE}/monthly/transaction/${id}` : `${API_BASE}/monthly/transaction`;
+             const method = isEdit ? 'PUT' : 'POST';
+
+             try {
+                 const res = await fetch(endpoint, {
+                     method: method,
+                     headers: {'Content-Type': 'application/json'},
+                     body: JSON.stringify(payload)
+                 });
+                 if (res.ok) {
+                     if(isPayModal) closePayModal();
+                     else closeTxnModal();
+                     fetchTransactions();
+                 } else {
+                     alert("Error saving transaction");
+                 }
+             } catch(err) {
+                 console.error(err);
+             }
+        }
+
+        async function deleteTxn(id) {
+             if(confirm("Are you sure?")) {
+                 await fetch(`${API_BASE}/monthly/transaction/${id}`, { method: 'DELETE' });
+                 fetchTransactions();
+             }
+        }
+    </script>
+</body>
+</html>

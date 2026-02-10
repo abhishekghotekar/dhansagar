@@ -30,6 +30,14 @@ def migrate_schema():
             print("Added pending column.")
         except Exception as e:
             print(f"Error adding pending column: {e}")
+
+        try:
+            # Check/Add 'is_monthly' column
+            alter_query_monthly = text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_monthly BOOLEAN DEFAULT FALSE;")
+            connection.execute(alter_query_monthly)
+            print("Added is_monthly column.")
+        except Exception as e:
+            print(f"Error adding is_monthly column: {e}")
             
         connection.commit()
     

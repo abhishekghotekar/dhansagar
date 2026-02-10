@@ -29,6 +29,9 @@
             <ion-icon name="add-circle"></ion-icon>
             Add New Customer
         </button>
+        <a href="/static/monthly.html" class="btn-secondary" style="margin-left: 10px; padding: 0.5rem 1rem; color: var(--text-primary); text-decoration: none; display: flex; align-items: center; gap: 5px; font-weight: 500;">
+            <ion-icon name="calendar-outline"></ion-icon> Monthly Credit
+        </a>
     </nav>
 
     <!-- 2. Main Dashboard Container -->
@@ -46,6 +49,7 @@
         </div>
         
         <!-- Stats Grid -->
+
         <div class="stats-grid fade-in-up">
             <div class="stat-card">
                 <div class="stat-icon blue"><ion-icon name="water-outline"></ion-icon></div>
@@ -141,6 +145,12 @@
                                 <option value="false">Pending</option>
                             </select>
                         </div>
+                    </div>
+
+                    <!-- Monthly Credit Checkbox -->
+                    <div class="form-group" style="flex-direction: row; align-items: center; gap: 8px; margin-bottom: 1rem;">
+                        <input type="checkbox" id="is_monthly" style="width: auto;">
+                        <label for="is_monthly" style="margin: 0; font-weight: 500;">Monthly Credit Customer (Pays after 1 month)</label>
                     </div>
 
                     <!-- Metrics (Grid) -->

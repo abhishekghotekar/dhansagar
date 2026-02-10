@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import text
 from app.routes.customer_routes import router
 from app.db.postgres import engine, Base
-from app.db.models import CustomerModel
+from app.db.models import CustomerModel, TransactionModel
 
 # Create DB tables
 Base.metadata.create_all(bind=engine)
@@ -19,6 +19,11 @@ try:
         connection.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS pending FLOAT DEFAULT 0.0;"))
         # Add 'date' column if missing
         connection.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS date TIMESTAMP WITH TIME ZONE;"))
+        # Add 'is_monthly' column if missing
+        connection.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_monthly BOOLEAN DEFAULT FALSE;"))
+        
+        # We can also create transactions table if not exists via SQL, but create_all above should handle new tables.
+        
         connection.commit()
         print("Schema migration checked/applied successfully.")
 except Exception as e:
@@ -35,6 +40,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # include routes
 app.include_router(router)
+from app.routes.monthly_routes import router as monthly_router
+app.include_router(monthly_router)
 
 @app.get("/")
 async def read_index():
