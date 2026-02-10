@@ -22,14 +22,38 @@ def get_transactions(customer_id: str, db: Session = Depends(get_db)):
     
     # Calculate totals
     total_jars = sum(t.jar_count for t in transactions)
-    total_amount = sum(t.amount for t in transactions)
+    
+    # Smart Logic for Ledger:
+    # 1. If jars > 0: The 'amount' is treated as the COST of those jars (Debit).
+    # 2. If jars == 0: The 'amount' is treated as a PAYMENT (Credit).
+    # 3. Explicit Negative amounts are always treated as COST (adjustments).
+    
+    total_cost = 0.0
+    total_paid = 0.0
+    
+    for t in transactions:
+        val = t.amount
+        if t.jar_count > 0:
+            # It's a delivery. Amount represents cost.
+            # Even if positive, we treat as cost.
+            total_cost += abs(val) # Treat as Cost
+        else:
+            # No jars.
+            if val > 0:
+                 total_paid += val  # Payment
+            else:
+                 total_cost += abs(val) # Negative amount with 0 jars = Cost adjustment
+    
+    total_pending = total_cost - total_paid
     
     return {
         "transactions": transactions,
         "summary": {
             "customer_name": customer.customer_name if customer else "Unknown",
             "total_jars": total_jars,
-            "total_amount": total_amount
+            "total_cost": total_cost,
+            "total_paid": total_paid,
+            "total_pending": total_pending
         }
     }
 

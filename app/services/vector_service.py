@@ -23,6 +23,18 @@ def parse_date(date_val):
 
 # 🔵 Store customer in vector DB and Postgres
 def store_customer(data: dict, db: Session):
+    # Check for duplicate customer by number
+    cust_num = data.get('customer_number')
+    if cust_num:
+        existing_customer = db.query(CustomerModel).filter(
+            CustomerModel.customer_number == cust_num
+        ).first()
+        
+        if existing_customer:
+            print(f"Duplicate customer found: {cust_num}. Updating existing record {existing_customer.id}")
+            update_customer(existing_customer.id, data, db)
+            return existing_customer.id
+
     # convert to searchable text
     text = customer_to_text(data)
 
@@ -247,9 +259,14 @@ def search_customer(query: str):
 
 
 # 📄 Get all customers (from Postgres)
-def get_all_customers(db: Session):
+def get_all_customers(db: Session, exclude_monthly: bool = False):
     # Fetch from Postgres
-    customers = db.query(CustomerModel).all()
+    query = db.query(CustomerModel)
+    
+    if exclude_monthly:
+        query = query.filter(CustomerModel.is_monthly == False)
+        
+    customers = query.all()
     # Sort by updated_at desc if available, to show newest updates first
     try:
         customers.sort(key=lambda x: x.updated_at or x.created_at or datetime.min, reverse=True)

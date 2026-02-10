@@ -39,58 +39,83 @@
 
         <!-- Header -->
         <div class="header-wrapper" style="margin-bottom: 2rem;">
-            <h1>Customer Ledger</h1>
-            <p id="customerName">Loading...</p>
+            <h1 id="customerName" style="font-size: 2rem; color: #1e293b;">Loading...</h1>
+            <span id="customerStatus" class="badge" style="display: none; margin-top: 0.5rem; width: fit-content;"></span>
         </div>
 
-        <!-- Stats Grid -->
+        <!-- Stats Cards (Responsive Grid) -->
         <div class="stats-grid fare-in-up">
+            <!-- Total Jars -->
             <div class="stat-card">
                  <div class="stat-icon blue"><ion-icon name="water-outline"></ion-icon></div>
-                 <div class="stat-info"><span>Total Jars</span><strong id="totalJars">0</strong></div>
+                 <div class="stat-info">
+                    <span class="label">Total Jars</span>
+                    <strong id="totalJars" class="value">0</strong>
+                 </div>
             </div>
+            
+            <!-- Total Pending (Outstanding) -->
+            <div class="stat-card">
+                 <div class="stat-icon orange"><ion-icon name="alert-circle-outline"></ion-icon></div>
+                 <div class="stat-info">
+                    <span class="label">Pending Due</span>
+                    <strong id="totalPending" class="value" style="color: #ea580c;">₹0</strong>
+                 </div>
+            </div>
+
+            <!-- Total Paid (Revenue) -->
              <div class="stat-card">
                  <div class="stat-icon green"><ion-icon name="cash-outline"></ion-icon></div>
-                 <div class="stat-info"><span>Total Amount</span><strong id="totalAmount">₹0</strong></div>
+                 <div class="stat-info">
+                    <span class="label">Total Paid</span>
+                    <strong id="totalPaid" class="value">₹0</strong>
+                 </div>
             </div>
-            <div class="stat-card" style="cursor: pointer; background: #ecfdf5; border: 1px solid #10b981;" onclick="openPaymentModal()">
-                 <div class="stat-icon green"><ion-icon name="wallet-outline"></ion-icon></div>
-                 <div class="stat-info"><span style="color: #059669;">Settle Payment</span><strong>Record Cash In</strong></div>
-            </div>
-             <div class="stat-card action-card" onclick="openTxnModal(false)">
-                 <div class="stat-icon purple"><ion-icon name="add-outline"></ion-icon></div>
-                 <div class="stat-info"><span style="color: #6366f1;">Add New Entry</span><strong>Record Transaction</strong></div>
+            
+            <!-- Global Action -->
+             <div class="stat-card action-card" onclick="openTxnModal(false)" style="background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%); color: white; border: none; cursor: pointer; justify-content: center; text-align: center;">
+                 <div style="display: flex; flex-direction: column; align-items: center; gap: 0.5rem;">
+                    <ion-icon name="add-circle-outline" style="font-size: 2rem;"></ion-icon>
+                    <span style="font-weight: 600;">Add Entry</span>
+                 </div>
             </div>
         </div>
 
         <!-- Transaction List -->
         <div class="table-container fade-in-up">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th width="15%">Date</th>
-                        <th width="25%">Description</th>
-                        <th width="15%" class="text-right">Jars</th>
-                        <th width="15%" class="text-right">Debit (Cost)</th>
-                        <th width="15%" class="text-right">Credit (Paid)</th>
-                        <th width="15%" class="text-right">Action</th>
-                    </tr>
-                </thead>
-                <tbody id="txnTableBody">
-                    <tr><td colspan="6" class="text-center">Loading...</td></tr>
-                </tbody>
-            </table>
+            <div class="table-header">
+                <h3>Transaction History</h3>
+                <!-- Optional: Filter or Range Picker could go here -->
+            </div>
+            
+            <div style="overflow-x: auto;">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th style="min-width: 100px;">Date</th>
+                            <th style="min-width: 150px;">Description</th>
+                            <th class="text-right" style="min-width: 80px;">Jars</th>
+                            <th class="text-right" style="min-width: 100px;">Cost (Debit)</th>
+                            <th class="text-right" style="min-width: 100px;">Paid (Credit)</th>
+                            <th class="text-right" style="min-width: 80px;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="txnTableBody">
+                        <tr><td colspan="6" class="text-center" style="padding: 2rem; color: #94a3b8;">Loading records...</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
 
     </div>
 
-    <!-- Add/Edit Transaction Modal -->
+    <!-- Universal Transaction Modal -->
     <div id="txnModal" class="modal-overlay">
         <div class="modal-card">
             <div class="modal-header">
                 <div class="modal-title">
-                    <ion-icon name="document-text-outline"></ion-icon>
-                    <span id="modalTitle">Add Entry</span>
+                    <ion-icon name="create-outline"></ion-icon>
+                    <span id="modalTitle">New Entry</span>
                 </div>
                 <button onclick="closeTxnModal()" class="close-btn"><ion-icon name="close-outline"></ion-icon></button>
             </div>
@@ -98,61 +123,197 @@
             <form id="txnForm">
                 <input type="hidden" id="txnId">
                 <div class="form-body">
-                    <div class="form-group">
-                        <label for="txnDate">Date</label>
-                        <input type="date" id="txnDate" required>
+                    
+                    <!-- Transaction Type Toggles -->
+                    <div style="display: flex; gap: 1rem; margin-bottom: 1.5rem; justify-content: center;">
+                        <label class="type-radio">
+                            <input type="radio" name="txnType" value="delivery" checked onchange="toggleTxnFields()">
+                            <span class="radio-btn delivery">
+                                <ion-icon name="cube-outline"></ion-icon> Delivery / Charge
+                            </span>
+                        </label>
+                        <label class="type-radio">
+                            <input type="radio" name="txnType" value="payment" onchange="toggleTxnFields()">
+                            <span class="radio-btn payment">
+                                <ion-icon name="wallet-outline"></ion-icon> Payment Received
+                            </span>
+                        </label>
                     </div>
-                    <div class="form-group">
-                         <label for="txnJars">Number of Jars</label>
-                         <input type="number" id="txnJars" value="0" min="0">
+
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label>Date</label>
+                            <input type="date" id="txnDate" required>
+                        </div>
+                        <div class="form-group" id="jarGroup">
+                             <label>Jars Delivered</label>
+                             <input type="number" id="txnJars" value="0" min="0">
+                        </div>
                     </div>
+
                     <div class="form-group">
-                         <label for="txnAmount">Amount (₹)</label>
-                         <input type="number" id="txnAmount" value="0.00" step="0.01" min="0">
-                         <small style="color: #64748b;">Enter positive value for Cost/Due.</small>
+                         <label id="amountLabel">Bill Amount (₹)</label>
+                         <input type="number" id="txnAmount" placeholder="0.00" step="0.01" min="0" required>
+                         <small id="amountHelp" style="color: #64748b;">Enter the cost of jars or service.</small>
                     </div>
+                    
                      <div class="form-group">
-                         <label for="txnDesc">Description (Optional)</label>
-                         <input type="text" id="txnDesc" placeholder="e.g. Regular delivery">
+                         <label>Description (Optional)</label>
+                         <input type="text" id="txnDesc" placeholder="e.g. 5 Jars delivered">
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn-secondary" onclick="closeTxnModal()">Cancel</button>
-                    <button type="submit" class="btn-primary">Save Entry</button>
+                    <button type="submit" class="btn-primary">Save Record</button>
                 </div>
             </form>
         </div>
     </div>
     
-    <!-- Payment Modal -->
-    <div id="payModal" class="modal-overlay">
-        <div class="modal-card">
-             <div class="modal-header">
-                <div class="modal-title">
-                    <ion-icon name="wallet-outline"></ion-icon>
-                    <span>Record Payment</span>
-                </div>
-                <button onclick="closePayModal()" class="close-btn"><ion-icon name="close-outline"></ion-icon></button>
-            </div>
-            <form id="payForm">
-                <div class="form-body">
-                    <div class="form-group">
-                        <label>Date</label>
-                        <input type="date" id="payDate" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Amount Received (₹)</label>
-                        <input type="number" id="payAmount" min="0" step="1" required placeholder="e.g. 500">
-                    </div>
-                </div>
-                <div class="modal-footer">
-                     <button type="button" class="btn-secondary" onclick="closePayModal()">Cancel</button>
-                     <button type="submit" class="btn-primary" style="background: #10b981;">Confirm Payment</button>
-                </div>
-            </form>
-        </div>
-    </div>
+    <style>
+        /* --- Custom Page Styles --- */
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+            padding-bottom: 2rem; /* Keep existing padding */
+        }
+        
+        /* Stats Grid - Mobile Optimized */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        
+        .stat-card {
+            background: #fff;
+            padding: 1.25rem;
+            border-radius: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            border: 1px solid #e2e8f0;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        
+        .stat-icon {
+            width: 48px; height: 48px;
+            border-radius: 12px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+        
+        .stat-icon.blue { background: #eff6ff; color: #3b82f6; }
+        .stat-icon.orange { background: #fff7ed; color: #ea580c; }
+        .stat-icon.green { background: #ecfdf5; color: #10b981; }
+        
+        .stat-info { display: flex; flex-direction: column; }
+        .stat-info .label { font-size: 0.8rem; color: #64748b; font-weight: 500; }
+        .stat-info .value { font-size: 1.4rem; font-weight: 700; color: #1e293b; line-height: 1.2; }
+        
+        /* Action Card */
+        .action-card {
+            background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+            color: white;
+            justify-content: center;
+            cursor: pointer;
+            border: none;
+            transition: transform 0.2s;
+        }
+        .action-card:active { transform: scale(0.98); }
 
+        /* Responsive Breakpoints */
+        @media (max-width: 1024px) {
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        @media (max-width: 640px) {
+            .main-container { padding: 0 1rem; }
+            .header-wrapper h1 { font-size: 1.5rem !important; }
+            
+            /* Stats on Mobile */
+            .stats-grid { grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+            .stat-card { padding: 1rem; flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+            .stat-icon { width: 40px; height: 40px; font-size: 1.25rem; margin-bottom: 0.25rem; }
+            .stat-info .value { font-size: 1.1rem; }
+            
+            /* Action Card Full Width on Mobile */
+            .action-card { 
+                grid-column: span 2; 
+                flex-direction: row; 
+                align-items: center; 
+                padding: 1rem;
+            }
+            
+            /* Mobile Table -> Card View */
+            .data-table { min-width: 0 !important; } /* Override style.css 800px limit */
+            .data-table thead { display: none; }
+            .data-table, .data-table tbody, .data-table tr, .data-table td { display: block; width: 100%; }
+            .data-table tr {
+                margin-bottom: 1rem;
+                background: #fff;
+                border: 1px solid #e2e8f0;
+                border-radius: 12px;
+                padding: 1rem;
+                box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            }
+            .data-table td {
+                padding: 0.5rem 0;
+                border: none;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                text-align: right;
+            }
+            .data-table td:before {
+                content: attr(data-label);
+                font-weight: 600;
+                color: #64748b;
+                font-size: 0.85rem;
+                text-align: left;
+            }
+            .data-table td:last-child {
+                margin-top: 0.5rem;
+                padding-top: 0.75rem;
+                border-top: 1px dashed #e2e8f0;
+                justify-content: flex-end;
+                gap: 1rem;
+            }
+            
+            /* Form Grid */
+            .form-grid-2 { grid-template-columns: 1fr; }
+        }
+
+        /* Radio Type Toggles */
+        .type-radio input { display: none; }
+        .radio-btn {
+            display: flex; align-items: center; gap: 0.5rem;
+            padding: 0.75rem 1.25rem;
+            border-radius: 99px;
+            border: 1px solid #e2e8f0;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: #64748b;
+            transition: all 0.2s;
+        }
+        
+        .type-radio input:checked + .radio-btn.delivery {
+            background: #fff7ed; color: #ea580c; border-color: #ea580c;
+        }
+        .type-radio input:checked + .radio-btn.payment {
+            background: #ecfdf5; color: #10b981; border-color: #10b981;
+        }
+        
+        .form-grid-2 {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+        }
+    </style>
+    
     <script>
         const API_BASE = "";
         const urlParams = new URLSearchParams(window.location.search);
@@ -168,13 +329,31 @@
              }
              
              document.getElementById('txnForm').addEventListener('submit', handleTxnSubmit);
-             document.getElementById('payForm').addEventListener('submit', handlePaySubmit);
              
-             // Set default dates
-             const today = new Date().toISOString().split('T')[0];
-             document.getElementById('txnDate').value = today;
-             document.getElementById('payDate').value = today;
+             // Set default date
+             document.getElementById('txnDate').value = new Date().toISOString().split('T')[0];
         });
+        
+        function toggleTxnFields() {
+            const type = document.querySelector('input[name="txnType"]:checked').value;
+            const jarGroup = document.getElementById('jarGroup');
+            const amountLabel = document.getElementById('amountLabel');
+            const amountHelp = document.getElementById('amountHelp');
+            const txnDesc = document.getElementById('txnDesc');
+            
+            if (type === 'delivery') {
+                jarGroup.style.display = 'flex';
+                amountLabel.textContent = 'Bill Amount (Cost)';
+                amountHelp.textContent = 'Enter the cost for these jars (Debit).';
+                txnDesc.placeholder = 'e.g. Daily Delivery';
+            } else {
+                jarGroup.style.display = 'none';
+                document.getElementById('txnJars').value = 0;
+                amountLabel.textContent = 'Amount Received';
+                amountHelp.textContent = 'Enter the amount paid by customer (Credit).';
+                txnDesc.placeholder = 'e.g. Cash Payment';
+            }
+        }
 
         async function fetchTransactions() {
              try {
@@ -183,14 +362,25 @@
                  
                  // Render Summary
                  document.getElementById('totalJars').textContent = data.summary.total_jars;
-                 
-                 // Total Amount Logic: Sum of Jars Cost - Payments? 
-                 // Currently API just sums 'amount'. 
-                 // If we use positive for Cost and Negative for Payment:
-                 // Then Sum is the BALANCE DUE.
-                 // Let's assume the user wants access to Balance.
-                 document.getElementById('totalAmount').textContent = '₹' + data.summary.total_amount;
+                 document.getElementById('totalPending').textContent = '₹' + (data.summary.total_pending || 0);
+                 document.getElementById('totalPaid').textContent = '₹' + (data.summary.total_paid || 0);
+
+                 // Set H1 to Customer Name
                  document.getElementById('customerName').textContent = data.summary.customer_name; 
+                 document.title = `${data.summary.customer_name} | Ledger`;
+                 
+                 // Update Status Badge
+                 const statusEl = document.getElementById('customerStatus');
+                 if (statusEl) {
+                     statusEl.style.display = 'inline-block';
+                     if ((data.summary.total_pending || 0) > 0) {
+                         statusEl.className = 'badge badge-pending';
+                         statusEl.textContent = 'Outstanding';
+                     } else {
+                         statusEl.className = 'badge badge-success';
+                         statusEl.textContent = 'Settled';
+                     }
+                 }
 
                  renderTxnTable(data.transactions);
                  currentTxns = data.transactions;
@@ -205,7 +395,7 @@
             tbody.innerHTML = '';
 
             if(!txns || txns.length === 0) {
-                 tbody.innerHTML = '<tr><td colspan="6" class="text-center">No records found.</td></tr>';
+                 tbody.innerHTML = '<tr><td colspan="6" class="text-center" style="padding: 2rem; color: #94a3b8;">No records found.</td></tr>';
                  return;
             }
 
@@ -213,100 +403,34 @@
                 const tr = document.createElement('tr');
                 const date = new Date(t.date).toLocaleDateString();
                 
-                // Logic for Credit/Debit
-                // If amount is negative, it's Credit (Paid). Or if logic is reversed?
-                // Standard: Bill (Debit) is Pos, Payment (Credit) is Neg.
-                // Let's display absolute values in columns
+                // Smart Logic (Matching Backend)
+                let cost = 0; 
+                let paid = 0;
                 
-                let debit = '-', credit = '-';
-                let amountStyle = '';
-                
-                // Heuristic: If Amount < 0, it's a payment.
-                // If Amount > 0, it's a cost.
-                // Wait, in previous step `vector_service` logic:
-                // paid_diff > 0 -> Means PAID increased. 
-                // Currently TransactionModel stores `amount`.
-                // If `paid` increases, `amount` increases.
-                // So POSITIVE means PAYMENT?
-                // Let's check `vector_service` again:
-                // `amount=paid_diff`. If paid_diff is +20 (user paid 20), amount is +20.
-                // So POSITIVE = PAID.
-                // But wait, user prompt "how many amount" usuall means COST.
-                // And "1 jar 20 jama" -> 20 deposited.
-                
-                // Let's assume POSITIVE = PAID (Credit).
-                // Then COST (Debit) must be tracked separately?
-                // Or maybe we use logic: Jars * Rate = Cost?
-                // The current system only stores `jar_count` and `amount`.
-                // If `jar_count` > 0 and `amount` = 0, it's just jars.
-                // If `jar_count` = 0 and `amount` > 0, it's payment.
-                
-                // Let's display:
-                // Jars: t.jar_count
-                // Credit (Paid): t.amount (if > 0)
-                // Debit (Cost): ?? We don't store Rate yet.
-                // Maybe the user enters RATE in amount?
-                // "how many amount" might mean BILL AMOUNT.
-                
-                // Let's just output raw amount for now in one column or try to split.
-                // If Jars > 0, Amount likely represents Cost?
-                // If Jars = 0, Amount likely represents Payment?
-                
-                // Let's stick to user request: "which days how many jar and how many amount"
-                // So just show columns: Date | Jars | Amount.
-                // And adding "Credit/Debit" headers might confuse if we aren't sure.
-                
-                // Modified Plan: Just columns: Date | Desc | Jars | Amount | Action.
-                // Amount can be interpreted by user.
-                
-                // Reverting to simpler table but better styled.
-                // Actually, let's keep Credit/Debit if we can infer:
-                // If jar_count > 0, likely Debit? 
-                // But user might add "1 jar, 20 Rs" -> 20 Rs COST.
-                // user might add "0 jars, 500 Rs" -> PAYMENT? Or COST?
-                
-                // Let's look at `vector_service` again.
-                // `paid_diff` -> `amount`.
-                // `paid` in CustomerModel implies "Total Amount Paid by Customer".
-                // So specific transactions increasing `paid` are PAYMENTS.
-                
-                // So POSITIVE amount = PAYMENT.
-                // But what about COST?
-                // The user says "1 jar 20 jama" -> 1 Jar, 20 Paid.
-                // The System doesn't seem to track "Cost" explicitly in `CustomerModel` (only `jar` count, `paid` amount, `pending` amount).
-                // `pending` usually = (Jars * Rate) - Paid.
-                // But we don't have Rate. We have explicit `pending`.
-                
-                // So a transaction likely affects `pending` or `paid`.
-                // Let's show:
-                // Jars | Amount (Paid)
-                // Because `amount` maps to `paid` column in `CustomerModel`.
-                
-                // But wait, `monthly_detail` logic sums `amount`.
-                // If `amount` = Paid, then Total Amount = Total Paid.
-                // This makes sense.
-                // So we need a way to track "Cost" or "Pending"?
-                // The API shows `total_jars` and `total_amount`.
-                // User wants "proper all days... how many jar and how many amount".
-                // "Amount" usually means Money.
-                
-                // Conclusion: The TABLE shows Jars and Money Paid.
-                // The "Settle Payment" button adds a record with Positive Amount.
-                // If we want to track "Pending", we need to know the cost.
-                // Since this is a simple app, maybe "Amount" column is just "Money Transaction".
-                
-                // Let's render:
-                // Jars | Amount
+                if (t.jar_count > 0) {
+                    cost = Math.abs(t.amount); 
+                } else {
+                    if (t.amount > 0) paid = t.amount;
+                    else cost = Math.abs(t.amount);
+                }
                 
                 const trContent = `
-                    <td>${date}</td>
-                    <td>${t.description || '-'}</td>
-                    <td class="text-right" style="font-weight:600;">${t.jar_count > 0 ? t.jar_count : '-'}</td>
-                    <td class="text-right" style="color: ${t.amount > 0 ? '#10b981' : '#64748b'}; font-weight: 600;">
-                        ${t.amount !== 0 ? '₹'+Math.abs(t.amount) : '-'}
-                        ${t.amount > 0 ? '(Paid)' : ''}
+                    <td data-label="Date">
+                        <div class="cell-date">${date}</div>
                     </td>
-                    <td class="text-right">
+                    <td data-label="Description">
+                        <div class="cell-address">${t.description || '-'}</div>
+                    </td>
+                    <td data-label="Jars" class="text-right" style="font-weight:600; color: #2563eb;">
+                        ${t.jar_count > 0 ? t.jar_count : '<span style="color:#cbd5e1">-</span>'}
+                    </td>
+                    <td data-label="Debit (Cost)" class="text-right" style="font-weight: 600; color: #ea580c;">
+                        ${cost > 0 ? '₹'+cost : '<span style="color:#cbd5e1">-</span>'}
+                    </td>
+                    <td data-label="Credit (Paid)" class="text-right" style="font-weight: 600; color: #10b981;">
+                         ${paid > 0 ? '₹'+paid : '<span style="color:#cbd5e1">-</span>'}
+                    </td>
+                    <td data-label="Action" class="text-right">
                         <button class="btn-icon" onclick="openTxnModal(true, ${t.id})">
                              <ion-icon name="create-outline"></ion-icon>
                         </button>
@@ -320,83 +444,33 @@
             });
         }
         
-        // Modal Logic
-        function openTxnModal(isEdit, id = null) {
-            const modal = document.getElementById('txnModal');
-            const title = document.getElementById('modalTitle');
-            const form = document.getElementById('txnForm');
-            
-            if (isEdit) {
-                 const txn = currentTxns.find(t => t.id === id);
-                 if (txn) {
-                     title.textContent = 'Edit Entry';
-                     document.getElementById('txnId').value = txn.id;
-                     document.getElementById('txnDate').value = new Date(txn.date).toISOString().split('T')[0];
-                     document.getElementById('txnJars').value = txn.jar_count;
-                     document.getElementById('txnAmount').value = txn.amount;
-                     document.getElementById('txnDesc').value = txn.description || '';
-                 }
-            } else {
-                 title.textContent = 'Add Entry';
-                 form.reset();
-                 document.getElementById('txnId').value = '';
-                 document.getElementById('txnDate').value = new Date().toISOString().split('T')[0];
-            }
-            
-            modal.style.display = 'flex';
-            setTimeout(() => modal.classList.add('active'), 10);
-        }
-
-        function closeTxnModal() {
-            const modal = document.getElementById('txnModal');
-            modal.classList.remove('active');
-            setTimeout(() => modal.style.display = 'none', 300);
-        }
-        
-        // Payment Modal
-        function openPaymentModal() {
-             const modal = document.getElementById('payModal');
-             document.getElementById('payDate').value = new Date().toISOString().split('T')[0];
-             document.getElementById('payAmount').value = '';
-             modal.style.display = 'flex';
-             setTimeout(() => modal.classList.add('active'), 10);
-        }
-        
-        function closePayModal() {
-            const modal = document.getElementById('payModal');
-            modal.classList.remove('active');
-            setTimeout(() => modal.style.display = 'none', 300);
-        }
-
         async function handleTxnSubmit(e) {
              e.preventDefault();
-             // [Same logic as before]
+             
              const id = document.getElementById('txnId').value;
              const isEdit = !!id;
+             const type = document.querySelector('input[name="txnType"]:checked').value;
+             
+             let amountVal = parseFloat(document.getElementById('txnAmount').value) || 0;
+             let jarVal = parseInt(document.getElementById('txnJars').value) || 0;
+             
+             let finalAmount = Math.abs(amountVal);
+             if (type === 'payment') {
+                 jarVal = 0; 
+             }
+             
              const payload = {
                  customer_id: customerId,
                  date: document.getElementById('txnDate').value,
-                 jar_count: parseInt(document.getElementById('txnJars').value),
-                 amount: parseFloat(document.getElementById('txnAmount').value),
+                 jar_count: jarVal,
+                 amount: finalAmount,
                  description: document.getElementById('txnDesc').value
              };
              
              saveTxn(payload, isEdit, id);
         }
         
-        async function handlePaySubmit(e) {
-            e.preventDefault();
-            const payload = {
-                customer_id: customerId,
-                date: document.getElementById('payDate').value,
-                jar_count: 0,
-                amount: parseFloat(document.getElementById('payAmount').value),
-                description: 'Payment Received'
-            };
-            saveTxn(payload, false, null, true); // True = Payment modal
-        }
-        
-        async function saveTxn(payload, isEdit, id, isPayModal = false) {
+        async function saveTxn(payload, isEdit, id) {
              const endpoint = isEdit ? `${API_BASE}/monthly/transaction/${id}` : `${API_BASE}/monthly/transaction`;
              const method = isEdit ? 'PUT' : 'POST';
 
@@ -407,8 +481,7 @@
                      body: JSON.stringify(payload)
                  });
                  if (res.ok) {
-                     if(isPayModal) closePayModal();
-                     else closeTxnModal();
+                     closeTxnModal();
                      fetchTransactions();
                  } else {
                      alert("Error saving transaction");
@@ -424,6 +497,51 @@
                  fetchTransactions();
              }
         }
+        
+        function openTxnModal(isEdit, id = null) {
+            const modal = document.getElementById('txnModal');
+            const title = document.getElementById('modalTitle');
+            const form = document.getElementById('txnForm');
+            const radios = document.getElementsByName('txnType');
+            
+            if (isEdit) {
+                 const txn = currentTxns.find(t => t.id === id);
+                 if (txn) {
+                     title.textContent = 'Edit Entry';
+                     document.getElementById('txnId').value = txn.id;
+                     document.getElementById('txnDate').value = new Date(txn.date).toISOString().split('T')[0];
+                     document.getElementById('txnJars').value = txn.jar_count;
+                     
+                     if (txn.jar_count > 0) {
+                         radios[0].checked = true; // Delivery
+                         document.getElementById('txnAmount').value = Math.abs(txn.amount);
+                     } else {
+                         radios[1].checked = true; // Payment
+                         document.getElementById('txnAmount').value = Math.abs(txn.amount); 
+                     }
+                     
+                     document.getElementById('txnDesc').value = txn.description || '';
+                     toggleTxnFields(); 
+                 }
+            } else {
+                 title.textContent = 'New Entry';
+                 form.reset();
+                 document.getElementById('txnId').value = '';
+                 document.getElementById('txnDate').value = new Date().toISOString().split('T')[0];
+                 radios[0].checked = true;
+                 toggleTxnFields();
+            }
+            
+            modal.style.display = 'flex';
+            setTimeout(() => modal.classList.add('active'), 10);
+        }
+
+        function closeTxnModal() {
+            const modal = document.getElementById('txnModal');
+            modal.classList.remove('active');
+            setTimeout(() => modal.style.display = 'none', 300);
+        }
+    </script>
     </script>
 </body>
 </html>
