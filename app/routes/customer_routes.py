@@ -47,10 +47,10 @@ def update(doc_id: str, customer: Customer, db: Session = Depends(get_db)):
 
 # 🔍 Search customer (AI search)
 @router.get("/search")
-def search(q: str):
+def search(q: str, db: Session = Depends(get_db)):
     if not q:
         return []
-    results = search_customer(q)
+    results = search_customer(q, db)
     return results
 
 

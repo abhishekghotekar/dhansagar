@@ -1,4 +1,5 @@
 import os
+import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -46,3 +47,9 @@ app.include_router(monthly_router)
 @app.get("/")
 async def read_index():
     return FileResponse(os.path.join(STATIC_DIR, 'index.html'))
+
+
+
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)
+    # Force reload test
