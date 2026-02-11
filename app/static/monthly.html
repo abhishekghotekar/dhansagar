@@ -27,7 +27,10 @@
                 <span>Dhansagar Aqua</span>
             </div>
         </a>
-        <div style="margin-left: auto;">
+        <div style="margin-left: auto; display: flex; gap: 10px;">
+             <a href="/static/search.html" class="btn-secondary" style="display: flex; align-items: center; gap: 5px;">
+                <ion-icon name="search-outline"></ion-icon> Search
+            </a>
              <a href="/" class="btn-secondary">
                 <ion-icon name="arrow-back-outline"></ion-icon> Back to Dashboard
             </a>
@@ -46,6 +49,14 @@
             <button id="downloadMonthlyPdfBtn" class="btn-primary" style="display: flex; align-items: center; gap: 8px;">
                 <ion-icon name="download-outline"></ion-icon> Download Report
             </button>
+        </div>
+
+        <!-- Search Bar -->
+        <div style="margin-bottom: 1.5rem;">
+            <div class="search-wrapper" style="width: 100%; max-width: 400px; background: white; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                <ion-icon name="search-outline"></ion-icon>
+                <input type="text" id="monthlySearchInput" placeholder="Search by name or mobile number..." style="width: 100%;">
+            </div>
         </div>
 
         <!-- Customer List -->
@@ -80,16 +91,40 @@
             }
         });
 
+        // Store data for filtering with default matching empty array
+        let allMonthlyCustomers = [];
+
         async function fetchMonthlyCustomers() {
             try {
                 const res = await fetch(`${API_BASE}/monthly/customers`);
                 if (!res.ok) throw new Error('Failed to fetch');
-                const customers = await res.json();
-                renderTable(customers);
+                allMonthlyCustomers = await res.json();
+                renderTable(allMonthlyCustomers);
             } catch (err) {
                 console.error(err);
                 document.getElementById('monthlyTableBody').innerHTML = '<tr><td colspan="3" class="text-center" style="color:red">Error loading data</td></tr>';
             }
+        }
+
+        // Search Filter Logic
+        const searchInput = document.getElementById('monthlySearchInput');
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                const q = e.target.value.toLowerCase().trim();
+                
+                if (!q) {
+                    renderTable(allMonthlyCustomers);
+                    return;
+                }
+
+                const filtered = allMonthlyCustomers.filter(c => {
+                    const name = (c.customer_name || '').toLowerCase();
+                    const num = (c.customer_number || '').toString();
+                    return name.includes(q) || num.includes(q);
+                });
+                
+                renderTable(filtered);
+            });
         }
 
         function renderTable(customers) {

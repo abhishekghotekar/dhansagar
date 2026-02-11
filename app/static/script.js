@@ -3,9 +3,10 @@ const API_BASE = "";
 // Global store to avoid passing complex objects in onclick
 window.customersMap = {};
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     // 1. Initial Load
-    fetchAllCustomers();
+    await fetchAllCustomers();
+    checkUrlParams();
     setupModal();
 
     // 2. Search Listener
@@ -32,6 +33,16 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 });
+
+function checkUrlParams() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const id = urlParams.get('id');
+    if (id && window.customersMap[id]) {
+        // Clean URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+        openModal(true, id);
+    }
+}
 
 // --- Modal Management ---
 function setupModal() {

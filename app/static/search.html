@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Customers | Dhansagar Aqua</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <script type="module" src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.esm.js"></script>
+    <script nomodule src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.js"></script>
+    
+    <!-- Theme CSS -->
+    <link rel="stylesheet" href="/static/style.css?v=15">
+</head>
+<body>
+
+    <!-- Navigation Bar -->
+    <nav class="navbar">
+        <a href="/" style="text-decoration: none; color: inherit;">
+            <div class="brand">
+                <ion-icon name="water"></ion-icon>
+                <span>Dhansagar Aqua</span>
+            </div>
+        </a>
+        <div style="display: flex; gap: 10px;">
+            <a href="/" class="btn-secondary" style="display: flex; align-items: center; gap: 5px; text-decoration: none; color: var(--text-primary);">
+                <ion-icon name="home-outline"></ion-icon> Dashboard
+            </a>
+            <a href="/static/monthly.html" class="btn-secondary" style="display: flex; align-items: center; gap: 5px; text-decoration: none; color: var(--text-primary);">
+                <ion-icon name="calendar-outline"></ion-icon> Monthly Credit
+            </a>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="main-container">
+
+        <!-- Header -->
+        <div class="header-wrapper" style="margin-bottom: 2rem; text-align: center; padding-top: 2rem;">
+            <h1 style="font-size: 2rem; margin-bottom: 1rem;">Search Customers</h1>
+            <p style="color: var(--text-muted); margin-bottom: 2rem;">Find customers by name, phone number, or address.</p>
+            
+            <div class="search-hero" style="max-width: 600px; margin: 0 auto; position: relative;">
+                <div class="search-wrapper" style="width: 100%; padding: 0.5rem 1rem; background: white; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); border-radius: 12px; height: 50px;">
+                    <ion-icon name="search-outline" style="font-size: 1.5rem; color: var(--primary-blue);"></ion-icon>
+                    <input type="text" id="pageSearchInput" placeholder="Enter customer name or phone..." style="font-size: 1.1rem; padding-left: 10px; border: none; background: transparent; height: 100%;">
+                </div>
+            </div>
+        </div>
+
+        <!-- Search Results -->
+        <div class="table-container fade-in-up" id="searchResultsContainer" style="display: none;">
+            <div class="table-header">
+                <h3>Search Results</h3>
+                <span id="resultCount" class="badge badge-secondary">0 found</span>
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th width="15%">Date</th>
+                        <th width="20%">Name</th>
+                        <th width="25%">Address</th>
+                        <th width="15%">Phone</th>
+                        <th width="10%">Status</th>
+                        <th width="15%" class="text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="searchTableBody">
+                    <!-- Results injected here -->
+                </tbody>
+            </table>
+        </div>
+
+        <div id="initialState" class="empty-state">
+            <ion-icon name="search-circle-outline"></ion-icon>
+            <h3>Start Searching</h3>
+            <p>Type in the search box above to find customers.</p>
+        </div>
+
+        <div id="noResults" class="empty-state" style="display: none;">
+            <ion-icon name="sad-outline"></ion-icon>
+            <h3>No Customers Found</h3>
+            <p>We couldn't find any customers matching your search.</p>
+        </div>
+
+    </div>
+
+    <!-- Script -->
+    <script>
+        const API_BASE = "";
+
+        document.getElementById('pageSearchInput').addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+            clearTimeout(window.debounceTimer);
+            window.debounceTimer = setTimeout(() => performPageSearch(query), 300);
+        });
+
+        async function performPageSearch(query) {
+            const container = document.getElementById('searchResultsContainer');
+            const initialState = document.getElementById('initialState');
+            const noResults = document.getElementById('noResults');
+            const tbody = document.getElementById('searchTableBody');
+
+            if (!query) {
+                container.style.display = 'none';
+                initialState.style.display = 'block';
+                noResults.style.display = 'none';
+                return;
+            }
+
+            try {
+                // Determine search endpoint based on logic (assuming main search covers all)
+                const res = await fetch(`${API_BASE}/search?q=${encodeURIComponent(query)}`);
+                const customers = await res.json();
+
+                initialState.style.display = 'none';
+
+                if (customers.length === 0) {
+                    container.style.display = 'none';
+                    noResults.style.display = 'block';
+                } else {
+                    noResults.style.display = 'none';
+                    container.style.display = 'block';
+                    renderSearchTable(customers);
+                    document.getElementById('resultCount').textContent = `${customers.length} found`;
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        function renderSearchTable(customers) {
+            const tbody = document.getElementById('searchTableBody');
+            tbody.innerHTML = '';
+
+            customers.forEach(c => {
+                const tr = document.createElement('tr');
+                const liveDate = c.date ? new Date(c.date).toLocaleDateString() : 'N/A';
+                const statusColor = c.success ? 'color: #166534; background: #dcfce7;' : 'color: #854d0e; background: #fef9c3;';
+                const statusText = c.success ? 'Active' : 'Pending';
+
+                tr.innerHTML = `
+                    <td><div class="cell-date">${liveDate}</div></td>
+                    <td><div class="cell-name">${escapeHtml(c.customer_name)}</div></td>
+                    <td><div class="cell-address">${escapeHtml(c.customer_address)}</div></td>
+                    <td>${escapeHtml(c.customer_number)}</td>
+                    <td>
+                        <span style="padding: 2px 8px; border-radius: 99px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; ${statusColor}">
+                            ${statusText}
+                        </span>
+                    </td>
+                    <td class="text-right">
+                         <a href="/?id=${c.id}" class="btn-primary" style="text-decoration: none; padding: 0.4rem 0.8rem; display: inline-flex; align-items: center; font-size: 0.8rem;">
+                            View
+                        </a>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            return text.toString()
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+    </script>
+</body>
+</html>
