@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Monthly Credit Customers | AquaFlow</title>
+    <title>Monthly Credit Customers | Dhansagar Aqua</title>
     
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -24,7 +24,7 @@
         <a href="/" style="text-decoration: none; color: inherit;">
             <div class="brand">
                 <ion-icon name="water"></ion-icon>
-                <span>AquaFlow CRM</span>
+                <span>Dhansagar Aqua</span>
             </div>
         </a>
         <div style="margin-left: auto;">
@@ -38,9 +38,14 @@
     <div class="main-container">
 
         <!-- Header -->
-        <div class="header-wrapper" style="margin-bottom: 2rem;">
-            <h1>Monthly Credit Customers</h1>
-            <p>List of customers who pay on a monthly basis.</p>
+        <div class="header-wrapper" style="margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h1>Monthly Credit Customers</h1>
+                <p>List of customers who pay on a monthly basis.</p>
+            </div>
+            <button id="downloadMonthlyPdfBtn" class="btn-primary" style="display: flex; align-items: center; gap: 8px;">
+                <ion-icon name="download-outline"></ion-icon> Download Report
+            </button>
         </div>
 
         <!-- Customer List -->
@@ -66,6 +71,13 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             fetchMonthlyCustomers();
+            
+            const btn = document.getElementById('downloadMonthlyPdfBtn');
+            if(btn) {
+                btn.addEventListener('click', () => {
+                   window.location.href = `${API_BASE}/monthly/download-pdf`; 
+                });
+            }
         });
 
         async function fetchMonthlyCustomers() {
@@ -99,9 +111,14 @@
                         <div style="font-family: monospace; font-size: 1rem;">${escapeHtml(c.customer_number)}</div>
                     </td>
                     <td class="text-right">
-                        <a href="/static/monthly_detail.html?id=${c.id}" class="btn-primary" style="text-decoration: none; padding: 0.5rem 1rem; display: inline-flex; align-items: center; gap: 5px;">
-                            View Details <ion-icon name="arrow-forward-outline"></ion-icon>
-                        </a>
+                        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                            <button onclick="window.location.href='${API_BASE}/monthly/download-pdf/${c.id}'" class="btn-secondary" style="padding: 0.5rem 0.8rem; display: inline-flex; align-items: center; gap: 5px; cursor: pointer;" title="Download Ledger">
+                                <ion-icon name="download-outline"></ion-icon>
+                            </button>
+                            <a href="/static/monthly_detail.html?id=${c.id}" class="btn-primary" style="text-decoration: none; padding: 0.5rem 1rem; display: inline-flex; align-items: center; gap: 5px;">
+                                View Details <ion-icon name="arrow-forward-outline"></ion-icon>
+                            </a>
+                        </div>
                     </td>
                 `;
                 tbody.appendChild(tr);

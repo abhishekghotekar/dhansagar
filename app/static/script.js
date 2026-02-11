@@ -23,6 +23,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (form) {
         form.addEventListener('submit', handleFormSubmit);
     }
+    
+    // 4. PDF Download
+    const downloadBtn = document.getElementById('downloadPdfBtn');
+    if (downloadBtn) {
+        downloadBtn.addEventListener('click', () => {
+            window.location.href = `${API_BASE}/download-pdf`;
+        });
+    }
 });
 
 // --- Modal Management ---
@@ -241,6 +249,9 @@ function renderDashboard(customers) {
                     <div style="font-size: 0.85rem; color: #64748b;">${formattedDate}</div>
                 </td>
                 <td class="text-right">
+                    <button class="btn-icon" onclick="window.downloadCustomerPdf('${id}')" title="Download Ledger">
+                        <ion-icon name="document-text-outline"></ion-icon>
+                    </button>
                     <button class="btn-icon" onclick="window.editCustomer('${id}')">
                         <ion-icon name="create-outline"></ion-icon>
                     </button>
@@ -297,4 +308,8 @@ window.deleteCustomer = async function(id) {
         await fetch(`${API_BASE}/delete/${id}`, { method: 'DELETE' });
         fetchAllCustomers();
     }
+};
+
+window.downloadCustomerPdf = function(id) {
+    window.location.href = `${API_BASE}/monthly/download-pdf/${id}`;
 };
