@@ -18,11 +18,11 @@ EMBEDDING_MODEL = os.getenv(
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
-POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5433")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "customer_db")
 
 # Postgres Database URL
-POSTGRES_URL = os.getenv("POSTGRES_URL")
+POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
 if not POSTGRES_URL:
     user_pass = f"{POSTGRES_USER}:{POSTGRES_PASSWORD}" if POSTGRES_PASSWORD else POSTGRES_USER
     POSTGRES_URL = f"postgresql://{user_pass}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"

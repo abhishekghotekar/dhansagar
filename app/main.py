@@ -32,21 +32,14 @@ except Exception as e:
 
 app = FastAPI(title="Customer Vector API", version="1.0")
 
-# Get absolute path to the directory containing main.py
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(BASE_DIR, "static")
-
-# Mount static files
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
 # include routes
 app.include_router(router)
 from app.routes.monthly_routes import router as monthly_router
 app.include_router(monthly_router)
 
 @app.get("/")
-async def read_index():
-    return FileResponse(os.path.join(STATIC_DIR, 'index.html'))
+async def root():
+    return {"message": "Customer Vector API is running (Backend Only)"}
 
 
 
