@@ -54,6 +54,7 @@ class TransactionObj:
         self.date = kwargs.get("date")
         self.jar_count = kwargs.get("jar_count", 0)
         self.amount = kwargs.get("amount", 0.0)
+        self.pending = kwargs.get("pending", 0.0)
         self.description = kwargs.get("description", "")
         self.created_at = kwargs.get("created_at")
         self.updated_at = kwargs.get("updated_at")
@@ -65,6 +66,7 @@ class TransactionObj:
             "date": self.date.isoformat() if isinstance(self.date, datetime) else self.date,
             "jar_count": self.jar_count,
             "amount": self.amount,
+            "pending": self.pending,
             "description": self.description,
             "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
             "updated_at": self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at
@@ -85,7 +87,7 @@ class GoogleSheetsClient:
         ]
         self.transaction_headers = [
             "id", "customer_id", "date", "jar_count", "amount", 
-            "description", "created_at", "updated_at"
+            "description", "created_at", "updated_at", "pending"
         ]
 
     def initialize(self):
@@ -136,6 +138,10 @@ class GoogleSheetsClient:
         # 2. Ensure 'transactions' worksheet
         try:
             self.transactions_sheet = self.spreadsheet.worksheet("transactions")
+            # Migration check: ensure all headers are present (specifically "pending" at the end)
+            existing_headers = self.transactions_sheet.row_values(1)
+            if existing_headers and len(existing_headers) < len(self.transaction_headers):
+                self.transactions_sheet.update("A1:I1", [self.transaction_headers])
         except gspread.exceptions.WorksheetNotFound:
             self.transactions_sheet = self.spreadsheet.add_worksheet("transactions", rows="5000", cols="10")
             self.transactions_sheet.append_row(self.transaction_headers)
@@ -202,6 +208,10 @@ class GoogleSheetsClient:
             amount = float(row_dict.get("amount", 0.0))
         except:
             amount = 0.0
+        try:
+            pending = float(row_dict.get("pending", 0.0))
+        except:
+            pending = 0.0
 
         return TransactionObj(
             id=txn_id,
@@ -209,6 +219,7 @@ class GoogleSheetsClient:
             date=self._parse_datetime(row_dict.get("date")),
             jar_count=jar_count,
             amount=amount,
+            pending=pending,
             description=str(row_dict.get("description", "")),
             created_at=self._parse_datetime(row_dict.get("created_at")),
             updated_at=self._parse_datetime(row_dict.get("updated_at"))
@@ -316,8 +327,11 @@ class GoogleSheetsClient:
                 "date": parsed_date,
                 "jar_count": customer.jar,
                 "amount": customer.paid,
+                "pending": customer.pending,
                 "description": "Initial Record"
             })
+        else:
+            self.sync_customer_sheet(doc_id)
 
         return doc_id
 
@@ -385,8 +399,11 @@ class GoogleSheetsClient:
                 "date": customer.date or now,
                 "jar_count": jar_diff,
                 "amount": paid_diff,
+                "pending": customer.pending,
                 "description": description
             })
+        else:
+            self.sync_customer_sheet(customer_id)
 
         return True
 
@@ -394,6 +411,17 @@ class GoogleSheetsClient:
         self.initialize()
         if not self.initialized:
             return False
+
+        customer = self.get_customer(customer_id)
+        if customer:
+            # Delete customer's individual sheet if it exists
+            cust_sheet = self._find_customer_worksheet_by_id(customer_id, customer.customer_name)
+            if cust_sheet:
+                try:
+                    with sheets_lock:
+                        self.spreadsheet.del_worksheet(cust_sheet)
+                except Exception as e:
+                    print(f"Error deleting customer worksheet: {e}")
 
         with sheets_lock:
             records = self.customers_sheet.get_all_records()
@@ -475,12 +503,54 @@ class GoogleSheetsClient:
         else:
             parsed_date = self._parse_datetime(date_val) or now
 
+        customer_id = data.get("customer_id", "")
+        
+        # Calculate/retrieve pending value
+        pending_val = data.get("pending")
+        if pending_val is None:
+            cust = self.get_customer(customer_id)
+            if cust:
+                if cust.is_monthly:
+                    cust_txns = [t for t in txns if t.customer_id == customer_id]
+                    total_cost = 0.0
+                    total_paid = 0.0
+                    for t in cust_txns:
+                        val = t.amount
+                        if t.jar_count > 0:
+                            total_cost += abs(val)
+                        else:
+                            if val > 0:
+                                total_paid += val
+                            else:
+                                total_cost += abs(val)
+                    
+                    new_jar = int(data.get("jar_count", 0))
+                    new_amt = float(data.get("amount", 0.0))
+                    if new_jar > 0:
+                        total_cost += abs(new_amt)
+                    else:
+                        if new_amt > 0:
+                            total_paid += new_amt
+                        else:
+                            total_cost += abs(new_amt)
+                    pending_val = total_cost - total_paid
+                else:
+                    pending_val = cust.pending
+            else:
+                pending_val = 0.0
+        else:
+            try:
+                pending_val = float(pending_val)
+            except:
+                pending_val = 0.0
+
         txn = TransactionObj(
             id=next_id,
-            customer_id=data.get("customer_id", ""),
+            customer_id=customer_id,
             date=parsed_date,
             jar_count=int(data.get("jar_count", 0)),
             amount=float(data.get("amount", 0.0)),
+            pending=pending_val,
             description=data.get("description", ""),
             created_at=now,
             updated_at=now
@@ -489,6 +559,9 @@ class GoogleSheetsClient:
         row_values = self._object_to_transaction_row(txn)
         with sheets_lock:
             self.transactions_sheet.append_row(row_values)
+
+        # Sync customer's sheet
+        self.sync_customer_sheet(customer_id)
 
         return txn
 
@@ -526,12 +599,16 @@ class GoogleSheetsClient:
                 txn.date = self._parse_datetime(data["date"]) or txn.date
         if "jar_count" in data: txn.jar_count = int(data["jar_count"])
         if "amount" in data: txn.amount = float(data["amount"])
+        if "pending" in data: txn.pending = float(data["pending"])
         if "description" in data: txn.description = data["description"]
         txn.updated_at = now
 
         row_values = self._object_to_transaction_row(txn)
         with sheets_lock:
-            self.transactions_sheet.update(f"A{row_idx}:H{row_idx}", [row_values])
+            self.transactions_sheet.update(f"A{row_idx}:I{row_idx}", [row_values])
+
+        # Sync customer's sheet
+        self.sync_customer_sheet(txn.customer_id)
 
         return txn
 
@@ -544,6 +621,7 @@ class GoogleSheetsClient:
             records = self.transactions_sheet.get_all_records()
 
         row_idx = -1
+        customer_id = None
         for idx, r in enumerate(records):
             try:
                 curr_id = int(r.get("id"))
@@ -552,6 +630,7 @@ class GoogleSheetsClient:
 
             if curr_id == txn_id:
                 row_idx = idx + 2
+                customer_id = str(r.get("customer_id", ""))
                 break
 
         if row_idx == -1:
@@ -559,6 +638,10 @@ class GoogleSheetsClient:
 
         with sheets_lock:
             self.transactions_sheet.delete_rows(row_idx)
+
+        # Sync customer's sheet
+        if customer_id:
+            self.sync_customer_sheet(customer_id)
 
         return True
 
@@ -586,6 +669,172 @@ class GoogleSheetsClient:
             for r_idx in rows_to_delete:
                 self.transactions_sheet.delete_rows(r_idx)
 
+        return True
+
+    def _find_customer_worksheet_by_id(self, customer_id: str, name: str):
+        self.initialize()
+        if not self.initialized:
+            return None
+        
+        for suffix in ["", " (2)", " (3)", " (4)", " (5)"]:
+            title = f"{name}{suffix}"
+            try:
+                sheet = self.spreadsheet.worksheet(title)
+                val = sheet.cell(1, 1).value
+                if val and val.startswith("ID:") and val.split(":")[1].strip() == customer_id:
+                    return sheet
+            except gspread.exceptions.WorksheetNotFound:
+                continue
+            except Exception as e:
+                print(f"Error checking worksheet {title}: {e}")
+
+        for sheet in self.spreadsheet.worksheets():
+            if sheet.title in ["customers", "transactions"]:
+                continue
+            try:
+                val = sheet.cell(1, 1).value
+                if val and val.startswith("ID:") and val.split(":")[1].strip() == customer_id:
+                    return sheet
+            except Exception as e:
+                print(f"Error checking worksheet {sheet.title}: {e}")
+                
+        return None
+
+    def _get_unique_sheet_title(self, desired_name: str, customer_id: str):
+        sanitized_name = desired_name
+        for c in [':', '\\', '/', '?', '*', '[', ']']:
+            sanitized_name = sanitized_name.replace(c, '')
+        sanitized_name = sanitized_name[:90]
+        
+        existing = self._find_customer_worksheet_by_id(customer_id, desired_name)
+        if existing:
+            return existing.title
+            
+        title = sanitized_name
+        counter = 1
+        while True:
+            try:
+                sheet = self.spreadsheet.worksheet(title)
+                counter += 1
+                title = f"{sanitized_name} ({counter})"
+            except gspread.exceptions.WorksheetNotFound:
+                break
+        return title
+
+    def sync_customer_sheet(self, customer_id: str):
+        self.initialize()
+        if not self.initialized:
+            return False
+            
+        customer = self.get_customer(customer_id)
+        if not customer:
+            return False
+            
+        sheet = self._find_customer_worksheet_by_id(customer_id, customer.customer_name)
+        new_title = self._get_unique_sheet_title(customer.customer_name, customer_id)
+        
+        with sheets_lock:
+            if not sheet:
+                try:
+                    sheet = self.spreadsheet.add_worksheet(new_title, rows="1000", cols="5")
+                except Exception as e:
+                    print(f"Error creating customer worksheet {new_title}: {e}")
+                    return False
+            elif sheet.title != new_title:
+                try:
+                    sheet.update_title(new_title)
+                except Exception as e:
+                    print(f"Error updating customer worksheet title: {e}")
+                
+        txns = self.get_transactions_by_customer(customer_id)
+        txns.sort(key=lambda x: x.date or datetime.min)
+        
+        rows = [
+            [f"ID: {customer_id}", "", "", "", ""],
+            [f"Customer Name: {customer.customer_name}", f"Mobile: {customer.customer_number or ''}", "", "", ""],
+            ["", "", "", "", ""],
+            ["Date", "Jar", "Pending Amount", "Paid Amount", "Description"]
+        ]
+        
+        is_monthly = customer.is_monthly
+        running_pending = 0.0
+        
+        for t in txns:
+            date_str = t.date.strftime("%Y-%m-%d") if t.date else ""
+            jar = t.jar_count
+            desc = t.description or ""
+            
+            if is_monthly:
+                cost = 0.0
+                payment = 0.0
+                if jar > 0:
+                    cost = abs(t.amount)
+                    payment = 0.0
+                else:
+                    if t.amount > 0:
+                        payment = t.amount
+                        cost = 0.0
+                    else:
+                        cost = abs(t.amount)
+                        payment = 0.0
+                
+                running_pending = running_pending + cost - payment
+                paid_amount = payment
+                pending_amount = running_pending
+            else:
+                paid_amount = t.amount
+                pending_amount = t.pending
+            
+            rows.append([
+                date_str,
+                str(jar),
+                f"{pending_amount:.2f}" if isinstance(pending_amount, (int, float)) else str(pending_amount),
+                f"{paid_amount:.2f}" if isinstance(paid_amount, (int, float)) else str(paid_amount),
+                desc
+            ])
+            
+        with sheets_lock:
+            try:
+                sheet.clear()
+                sheet.update("A1", rows)
+                
+                sheet.format("A4:E4", {
+                    "backgroundColor": {
+                        "red": 0.082,
+                        "green": 0.133,
+                        "blue": 0.22
+                    },
+                    "textFormat": {
+                        "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+                        "fontSize": 11,
+                        "bold": True
+                    },
+                    "horizontalAlignment": "CENTER"
+                })
+                
+                sheet.format("A2:B2", {
+                    "textFormat": {
+                        "fontSize": 12,
+                        "bold": True
+                    }
+                })
+                
+                sheet.format("A1", {
+                    "textFormat": {
+                        "foregroundColor": {"red": 0.6, "green": 0.6, "blue": 0.6},
+                        "fontSize": 8
+                    }
+                })
+                
+                # Auto-resize columns to fit content automatically
+                try:
+                    sheet.columns_auto_resize(0, 5)
+                except Exception as ex:
+                    print(f"Error auto-resizing columns: {ex}")
+            except Exception as e:
+                print(f"Error updating or formatting customer worksheet: {e}")
+                return False
+                
         return True
 
 
