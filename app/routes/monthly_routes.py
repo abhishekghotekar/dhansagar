@@ -1,30 +1,37 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
 from app.db.postgres import get_db
-from app.db.models import CustomerModel, TransactionModel
 from app.schemas.transaction_schema import TransactionCreate, TransactionUpdate
 from datetime import datetime
+
 import io
 from fastapi.responses import StreamingResponse
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
+from app.services.monthly_service import (
+    get_monthly_customers,
+    get_customer_by_id,
+    toggle_monthly_status_service,
+    create_transaction,
+    get_transactions_by_customer,
+    update_transaction,
+    delete_transaction
+)
 
 router = APIRouter(prefix="/monthly", tags=["Monthly Credit"])
 
 # 1. Get Monthly Credit Customers
 @router.get("/customers")
-def get_monthly_customers_route(db: Session = Depends(get_db)):
-    customers = db.query(CustomerModel).filter(CustomerModel.is_monthly == True).all()
-    # Return simple list
+def get_monthly_customers_route(db = Depends(get_db)):
+    customers = get_monthly_customers(db)
     return customers
 
 # 2. Get Transactions for a Customer
 @router.get("/transactions/{customer_id}")
-def get_transactions(customer_id: str, db: Session = Depends(get_db)):
-    transactions = db.query(TransactionModel).filter(TransactionModel.customer_id == customer_id).order_by(TransactionModel.date.desc()).all()
-    customer = db.query(CustomerModel).filter(CustomerModel.id == customer_id).first()
+def get_transactions(customer_id: str, db = Depends(get_db)):
+    transactions = get_transactions_by_customer(customer_id, db)
+    customer = get_customer_by_id(customer_id, db)
     
     # Calculate totals
     total_jars = sum(t.jar_count for t in transactions)
@@ -65,25 +72,9 @@ def get_transactions(customer_id: str, db: Session = Depends(get_db)):
 
 # 3. Add Transaction
 @router.post("/transaction")
-def add_transaction(data: TransactionCreate, db: Session = Depends(get_db)):
+def add_transaction(data: TransactionCreate, db = Depends(get_db)):
     try:
-        # data.date is expected as ISO string
-        try:
-            date_obj = datetime.fromisoformat(data.date.replace('Z', '+00:00'))
-        except:
-             # Fallback if just YYYY-MM-DD
-             date_obj = datetime.strptime(data.date, "%Y-%m-%d")
-             
-        new_txn = TransactionModel(
-            customer_id=data.customer_id,
-            date=date_obj,
-            jar_count=data.jar_count,
-            amount=data.amount,
-            description=data.description
-        )
-        db.add(new_txn)
-        db.commit()
-        db.refresh(new_txn)
+        new_txn = create_transaction(data.dict(), db)
         return new_txn
     except Exception as e:
         print(f"Error adding transaction: {e}")
@@ -91,56 +82,34 @@ def add_transaction(data: TransactionCreate, db: Session = Depends(get_db)):
 
 # 4. Update Transaction
 @router.put("/transaction/{txn_id}")
-def update_transaction_route(txn_id: int, data: TransactionUpdate, db: Session = Depends(get_db)):
-    txn = db.query(TransactionModel).filter(TransactionModel.id == txn_id).first()
+def update_transaction_route(txn_id: int, data: TransactionUpdate, db = Depends(get_db)):
+    txn = update_transaction(txn_id, data.dict(exclude_unset=True), db)
     if not txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    
-    if data.date:
-        try:
-            txn.date = datetime.fromisoformat(data.date.replace('Z', '+00:00'))
-        except:
-            txn.date = datetime.strptime(data.date, "%Y-%m-%d")
-
-    if data.jar_count is not None:
-        txn.jar_count = data.jar_count
-    if data.amount is not None:
-        txn.amount = data.amount
-    if data.description is not None:
-        txn.description = data.description
-        
-    db.commit()
-    db.refresh(txn)
     return txn
 
 # 5. Delete Transaction
 @router.delete("/transaction/{txn_id}")
-def delete_transaction_route(txn_id: int, db: Session = Depends(get_db)):
-    txn = db.query(TransactionModel).filter(TransactionModel.id == txn_id).first()
-    if not txn:
+def delete_transaction_route(txn_id: int, db = Depends(get_db)):
+    success = delete_transaction(txn_id, db)
+    if not success:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    
-    db.delete(txn)
-    db.commit()
     return {"message": "Transaction deleted"}
 
 # 6. Toggle Monthly Status for Customer
 @router.post("/toggle-status/{customer_id}")
-def toggle_monthly_status(customer_id: str, is_monthly: bool, db: Session = Depends(get_db)):
-    customer = db.query(CustomerModel).filter(CustomerModel.id == customer_id).first()
-    if not customer:
+def toggle_monthly_status(customer_id: str, is_monthly: bool, db = Depends(get_db)):
+    success = toggle_monthly_status_service(customer_id, is_monthly, db)
+    if not success:
          raise HTTPException(status_code=404, detail="Customer not found")
-    
-    customer.is_monthly = is_monthly
-    db.commit()
     return {"message": f"Customer monthly status set to {is_monthly}"}
 
 # 7. Download Monthly Customer PDF
 @router.get("/download-pdf")
-def download_monthly_pdf(db: Session = Depends(get_db)):
+def download_monthly_pdf(db = Depends(get_db)):
     try:
         # 1. Fetch Monthly Customers
-        customers = db.query(CustomerModel).filter(CustomerModel.is_monthly == True).all()
+        customers = get_monthly_customers(db)
 
         # 2. Create Buffer
         buffer = io.BytesIO()
@@ -160,7 +129,7 @@ def download_monthly_pdf(db: Session = Depends(get_db)):
 
         for c in customers:
             # Calculate totals dynamically from transactions
-            transactions = c.transactions # via relationship
+            transactions = c.transactions # via relationship or list mapping
 
             total_jars = 0
             total_paid = 0.0
@@ -169,9 +138,9 @@ def download_monthly_pdf(db: Session = Depends(get_db)):
             last_date = "N/A"
             if transactions:
                 # Sort by date descending to find last activity
-                sorted_txns = sorted(transactions, key=lambda x: x.date, reverse=True)
+                sorted_txns = sorted(transactions, key=lambda x: x.date or datetime.min, reverse=True)
                 if sorted_txns:
-                    last_date = sorted_txns[0].date.strftime("%Y-%m-%d")
+                    last_date = sorted_txns[0].date.strftime("%Y-%m-%d") if sorted_txns[0].date else "N/A"
 
                 for t in transactions:
                     val = t.amount
@@ -247,14 +216,14 @@ def download_monthly_pdf(db: Session = Depends(get_db)):
 
 # 8. Download Single Customer Ledger PDF
 @router.get("/download-pdf/{customer_id}")
-def download_customer_ledger(customer_id: str, db: Session = Depends(get_db)):
+def download_customer_ledger(customer_id: str, db = Depends(get_db)):
     try:
         # 1. Fetch Customer & Transactions
-        customer = db.query(CustomerModel).filter(CustomerModel.id == customer_id).first()
+        customer = get_customer_by_id(customer_id, db)
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
             
-        transactions = db.query(TransactionModel).filter(TransactionModel.customer_id == customer_id).order_by(TransactionModel.date.desc()).all()
+        transactions = get_transactions_by_customer(customer_id, db)
         
         # 2. Logic (Replicated from get_transactions)
         prepared_data = []
@@ -285,7 +254,7 @@ def download_customer_ledger(customer_id: str, db: Session = Depends(get_db)):
             total_paid += paid
             
             prepared_data.append({
-                "date": t.date.strftime("%Y-%m-%d"),
+                "date": t.date.strftime("%Y-%m-%d") if t.date else "N/A",
                 "desc": t.description or "-",
                 "jars": str(t.jar_count) if t.jar_count > 0 else "-",
                 "debit": f"{cost:.2f}" if cost > 0 else "-",
@@ -355,3 +324,4 @@ def download_customer_ledger(customer_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"Error generating customer PDF: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+

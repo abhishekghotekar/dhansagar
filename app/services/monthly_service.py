@@ -1,59 +1,37 @@
-from sqlalchemy.orm import Session
-from app.db.models import CustomerModel, TransactionModel
-from app.schemas.customer_schema import CustomerUpdate
-from app.schemas.transaction_schema import TransactionCreate, TransactionUpdate
 from datetime import datetime
+from app.db.sheets import sheets_client
 
 # --- Monthly / Transaction Services ---
 
-def get_monthly_customers(db: Session):
-    return db.query(CustomerModel).filter(CustomerModel.is_monthly == True).all()
+def get_monthly_customers(db=None):
+    customers = [c for c in sheets_client.get_all_customers() if c.is_monthly]
+    txns = sheets_client.get_all_transactions()
+    for c in customers:
+        c.transactions = [t for t in txns if t.customer_id == c.id]
+    return customers
 
-def create_transaction(data: dict, db: Session):
-    date = datetime.fromisoformat(data['date'])
-    transaction = TransactionModel(
-        customer_id=data['customer_id'],
-        date=date,
-        jar_count=data['jar_count'],
-        amount=data['amount'],
-        description=data.get('description')
-    )
-    db.add(transaction)
-    db.commit()
-    db.refresh(transaction)
-    return transaction
+def get_customer_by_id(customer_id: str, db=None):
+    return sheets_client.get_customer(customer_id)
 
-def get_transactions_by_customer(customer_id: str, db: Session):
-    return db.query(TransactionModel).filter(TransactionModel.customer_id == customer_id).order_by(TransactionModel.date.desc()).all()
+def toggle_monthly_status_service(customer_id: str, is_monthly: bool, db=None):
+    return sheets_client.update_customer(customer_id, {"is_monthly": is_monthly})
 
-def update_transaction(transaction_id: int, data: dict, db: Session):
-    transaction = db.query(TransactionModel).filter(TransactionModel.id == transaction_id).first()
-    if not transaction:
-        return None
-    
-    if 'date' in data and data['date']:
-        transaction.date = datetime.fromisoformat(data['date'])
-    if 'jar_count' in data:
-        transaction.jar_count = data['jar_count']
-    if 'amount' in data:
-        transaction.amount = data['amount']
-    if 'description' in data:
-        transaction.description = data['description']
-        
-    db.commit()
-    db.refresh(transaction)
-    return transaction
+def create_transaction(data: dict, db=None):
+    return sheets_client.add_transaction(data)
 
-def delete_transaction(transaction_id: int, db: Session):
-    transaction = db.query(TransactionModel).filter(TransactionModel.id == transaction_id).first()
-    if transaction:
-        db.delete(transaction)
-        db.commit()
-        return True
-    return False
+def get_transactions_by_customer(customer_id: str, db=None):
+    return sheets_client.get_transactions_by_customer(customer_id)
 
-def calculate_totals(customer_id: str, db: Session):
-    transactions = get_transactions_by_customer(customer_id, db)
+def update_transaction(transaction_id: int, data: dict, db=None):
+    return sheets_client.update_transaction(transaction_id, data)
+
+def delete_transaction(transaction_id: int, db=None):
+    return sheets_client.delete_transaction(transaction_id)
+
+def calculate_totals(customer_id: str, db=None):
+    transactions = get_transactions_by_customer(customer_id)
     total_jars = sum(t.jar_count for t in transactions)
     total_amount = sum(t.amount for t in transactions)
     return {"total_jars": total_jars, "total_amount": total_amount}
+
+

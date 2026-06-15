@@ -13,16 +13,10 @@ EMBEDDING_MODEL = os.getenv(
     "all-MiniLM-L6-v2"
 )
 
-# Postgres Database URL
-# Database credentials
-POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
-POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5433")
-POSTGRES_DB = os.getenv("POSTGRES_DB", "customer_db")
+# Google Sheets Configuration
+USE_GOOGLE_SHEETS = os.getenv("USE_GOOGLE_SHEETS", "true").lower() == "true"
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "google-credentials.json")
+GOOGLE_SERVICE_ACCOUNT_DICT = os.getenv("GOOGLE_SERVICE_ACCOUNT_DICT", "")
 
-# Postgres Database URL
-POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
-if not POSTGRES_URL:
-    user_pass = f"{POSTGRES_USER}:{POSTGRES_PASSWORD}" if POSTGRES_PASSWORD else POSTGRES_USER
-    POSTGRES_URL = f"postgresql://{user_pass}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+

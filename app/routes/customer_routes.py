@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
 from app.schemas.customer_schema import Customer
 from app.db.postgres import get_db
 from app.services.vector_service import (
@@ -21,7 +20,7 @@ router = APIRouter()
 
 # 🟢 Store customer
 @router.post("/add-customer")
-def add_customer(customer: Customer, db: Session = Depends(get_db)):
+def add_customer(customer: Customer, db = Depends(get_db)):
     try:
         doc_id = store_customer(customer.dict(), db)
         return {
@@ -34,7 +33,7 @@ def add_customer(customer: Customer, db: Session = Depends(get_db)):
 
 # ✏️ Update customer
 @router.put("/update/{doc_id}")
-def update(doc_id: str, customer: Customer, db: Session = Depends(get_db)):
+def update(doc_id: str, customer: Customer, db = Depends(get_db)):
     try:
         success = update_customer(doc_id, customer.dict(), db)
         if not success:
@@ -47,7 +46,7 @@ def update(doc_id: str, customer: Customer, db: Session = Depends(get_db)):
 
 # 🔍 Search customer (AI search)
 @router.get("/search")
-def search(q: str, db: Session = Depends(get_db)):
+def search(q: str, db = Depends(get_db)):
     if not q:
         return []
     results = search_customer(q, db)
@@ -56,14 +55,14 @@ def search(q: str, db: Session = Depends(get_db)):
 
 # 📄 Get all customers
 @router.get("/all-customers")
-def get_all(db: Session = Depends(get_db)):
+def get_all(db = Depends(get_db)):
     data = get_all_customers(db, exclude_monthly=True)
     return data
 
 
 # 📥 Download PDF
 @router.get("/download-pdf")
-def download_pdf(db: Session = Depends(get_db)):
+def download_pdf(db = Depends(get_db)):
     try:
         # 1. Fetch data
         customers = get_all_customers(db, exclude_monthly=True)
@@ -126,6 +125,7 @@ def download_pdf(db: Session = Depends(get_db)):
 
 # ❌ Delete customer
 @router.delete("/delete/{doc_id}")
-def delete(doc_id: str, db: Session = Depends(get_db)):
+def delete(doc_id: str, db = Depends(get_db)):
     delete_customer(doc_id, db)
     return {"message": "Customer deleted"}
+
