@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import threading
+import time
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
@@ -90,6 +91,12 @@ class GoogleSheetsClient:
             "description", "created_at", "updated_at", "pending"
         ]
 
+        # Cache for worksheets and data to prevent hitting Google Sheet API 429 Rate Limits
+        self._worksheet_cache = {}        # maps customer_id -> Worksheet object
+        self._customers_cache = None      # (timestamp, list of CustomerObj)
+        self._transactions_cache = None   # (timestamp, list of TransactionObj)
+        self._cache_duration = 5.0        # Cache data for 5 seconds
+
     def initialize(self):
         if self.initialized:
             return True
@@ -126,6 +133,12 @@ class GoogleSheetsClient:
         except Exception as e:
             print(f"Failed to initialize Google Sheets backend: {e}")
             return False
+
+    def _invalidate_customers_cache(self):
+        self._customers_cache = None
+
+    def _invalidate_transactions_cache(self):
+        self._transactions_cache = None
 
     def _ensure_worksheets(self):
         # 1. Ensure 'customers' worksheet
@@ -256,17 +269,20 @@ class GoogleSheetsClient:
         if not self.initialized:
             return []
             
+        now_ts = time.time()
         with sheets_lock:
-            records = self.customers_sheet.get_all_records()
+            if self._customers_cache and (now_ts - self._customers_cache[0] < self._cache_duration):
+                customers = self._customers_cache[1]
+            else:
+                records = self.customers_sheet.get_all_records()
+                customers = []
+                for r in records:
+                    customers.append(self._row_to_customer(r))
+                self._customers_cache = (now_ts, customers)
             
-        customers = []
-        for r in records:
-            cust = self._row_to_customer(r)
-            if exclude_monthly and cust.is_monthly:
-                continue
-            customers.append(cust)
-            
-        return customers
+        if exclude_monthly:
+            return [c for c in customers if not c.is_monthly]
+        return list(customers)
 
     def get_customer(self, customer_id: str):
         customers = self.get_all_customers()
@@ -319,6 +335,7 @@ class GoogleSheetsClient:
         row_values = self._object_to_customer_row(customer)
         with sheets_lock:
             self.customers_sheet.append_row(row_values)
+            self._invalidate_customers_cache()
 
         # Create initial transaction log if jar count or paid is recorded
         if customer.jar or customer.paid:
@@ -383,6 +400,7 @@ class GoogleSheetsClient:
         
         with sheets_lock:
             self.customers_sheet.update(f"A{row_idx}:L{row_idx}", [row_values])
+            self._invalidate_customers_cache()
 
         # Generate transaction log if differences exist
         jar_diff = customer.jar - old_jar
@@ -420,6 +438,8 @@ class GoogleSheetsClient:
                 try:
                     with sheets_lock:
                         self.spreadsheet.del_worksheet(cust_sheet)
+                    if customer_id in self._worksheet_cache:
+                        del self._worksheet_cache[customer_id]
                 except Exception as e:
                     print(f"Error deleting customer worksheet: {e}")
 
@@ -437,6 +457,7 @@ class GoogleSheetsClient:
 
         with sheets_lock:
             self.customers_sheet.delete_rows(row_idx)
+            self._invalidate_customers_cache()
 
         # Cascading delete transactions
         self.delete_transactions_by_customer(customer_id)
@@ -465,14 +486,18 @@ class GoogleSheetsClient:
         if not self.initialized:
             return []
 
+        now_ts = time.time()
         with sheets_lock:
-            records = self.transactions_sheet.get_all_records()
+            if self._transactions_cache and (now_ts - self._transactions_cache[0] < self._cache_duration):
+                transactions = self._transactions_cache[1]
+            else:
+                records = self.transactions_sheet.get_all_records()
+                transactions = []
+                for r in records:
+                    transactions.append(self._row_to_transaction(r))
+                self._transactions_cache = (now_ts, transactions)
 
-        transactions = []
-        for r in records:
-            transactions.append(self._row_to_transaction(r))
-
-        return transactions
+        return list(transactions)
 
     def get_transactions_by_customer(self, customer_id: str):
         txns = self.get_all_transactions()
@@ -559,6 +584,7 @@ class GoogleSheetsClient:
         row_values = self._object_to_transaction_row(txn)
         with sheets_lock:
             self.transactions_sheet.append_row(row_values)
+            self._invalidate_transactions_cache()
 
         # Sync customer's sheet
         self.sync_customer_sheet(customer_id)
@@ -606,6 +632,7 @@ class GoogleSheetsClient:
         row_values = self._object_to_transaction_row(txn)
         with sheets_lock:
             self.transactions_sheet.update(f"A{row_idx}:I{row_idx}", [row_values])
+            self._invalidate_transactions_cache()
 
         # Sync customer's sheet
         self.sync_customer_sheet(txn.customer_id)
@@ -638,6 +665,7 @@ class GoogleSheetsClient:
 
         with sheets_lock:
             self.transactions_sheet.delete_rows(row_idx)
+            self._invalidate_transactions_cache()
 
         # Sync customer's sheet
         if customer_id:
@@ -668,6 +696,7 @@ class GoogleSheetsClient:
         with sheets_lock:
             for r_idx in rows_to_delete:
                 self.transactions_sheet.delete_rows(r_idx)
+            self._invalidate_transactions_cache()
 
         return True
 
@@ -676,27 +705,62 @@ class GoogleSheetsClient:
         if not self.initialized:
             return None
         
+        # Check in-memory cache first
+        if customer_id in self._worksheet_cache:
+            sheet = self._worksheet_cache[customer_id]
+            try:
+                # Access title property (does not call API in gspread, it is just a field on Worksheet)
+                _ = sheet.title
+                return sheet
+            except:
+                del self._worksheet_cache[customer_id]
+                
+        # If cache miss, populate cache for all customer worksheets in bulk (only 2 API calls total)
+        try:
+            with sheets_lock:
+                all_sheets = self.spreadsheet.worksheets()
+            
+            sheet_names = [s.title for s in all_sheets if s.title not in ["customers", "transactions"]]
+            
+            if sheet_names:
+                ranges = [f"'{s_name}'!A1" for s_name in sheet_names]
+                with sheets_lock:
+                    results = self.spreadsheet.values_batch_get(ranges)
+                value_ranges = results.get('valueRanges', [])
+                
+                # Map titles to worksheet objects
+                title_to_sheet = {s.title: s for s in all_sheets}
+                
+                for s_name, item in zip(sheet_names, value_ranges):
+                    values = item.get('values', [])
+                    if values and values[0] and values[0][0]:
+                        val = values[0][0]
+                        if val.startswith("ID:"):
+                            cid = val.split(":")[1].strip()
+                            sheet_obj = title_to_sheet.get(s_name)
+                            if sheet_obj:
+                                self._worksheet_cache[cid] = sheet_obj
+        except Exception as e:
+            print(f"Error rebuilding worksheet cache: {e}")
+            
+        # Re-check cache after refresh
+        if customer_id in self._worksheet_cache:
+            return self._worksheet_cache[customer_id]
+            
+        # Fallback to suffix search only if bulk fails/cannot find it
         for suffix in ["", " (2)", " (3)", " (4)", " (5)"]:
             title = f"{name}{suffix}"
             try:
-                sheet = self.spreadsheet.worksheet(title)
-                val = sheet.cell(1, 1).value
+                with sheets_lock:
+                    sheet = self.spreadsheet.worksheet(title)
+                    val = sheet.cell(1, 1).value
                 if val and val.startswith("ID:") and val.split(":")[1].strip() == customer_id:
+                    self._worksheet_cache[customer_id] = sheet
                     return sheet
             except gspread.exceptions.WorksheetNotFound:
                 continue
             except Exception as e:
-                print(f"Error checking worksheet {title}: {e}")
-
-        for sheet in self.spreadsheet.worksheets():
-            if sheet.title in ["customers", "transactions"]:
-                continue
-            try:
-                val = sheet.cell(1, 1).value
-                if val and val.startswith("ID:") and val.split(":")[1].strip() == customer_id:
-                    return sheet
-            except Exception as e:
-                print(f"Error checking worksheet {sheet.title}: {e}")
+                print(f"Error checking worksheet {title} in fallback: {e}")
                 
         return None
 
@@ -737,12 +801,14 @@ class GoogleSheetsClient:
             if not sheet:
                 try:
                     sheet = self.spreadsheet.add_worksheet(new_title, rows="1000", cols="5")
+                    self._worksheet_cache[customer_id] = sheet
                 except Exception as e:
                     print(f"Error creating customer worksheet {new_title}: {e}")
                     return False
             elif sheet.title != new_title:
                 try:
                     sheet.update_title(new_title)
+                    self._worksheet_cache[customer_id] = sheet
                 except Exception as e:
                     print(f"Error updating customer worksheet title: {e}")
                 
