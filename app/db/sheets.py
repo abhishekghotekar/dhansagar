@@ -359,7 +359,12 @@ class GoogleSheetsClient:
                 [row_values],
                 value_input_option="USER_ENTERED"
             )
-            self._customers_cache = None  # Force full cache invalidation after add
+            # Update cache in-place if it exists
+            if self._customers_cache is not None:
+                timestamp, cached_customers = self._customers_cache
+                if not any(c.id == customer.id for c in cached_customers):
+                    cached_customers.append(customer)
+                self._customers_cache = (timestamp, cached_customers)
 
         # Create initial transaction log if jar count or paid is recorded
         if customer.jar or customer.paid:
@@ -424,7 +429,14 @@ class GoogleSheetsClient:
         
         with sheets_lock:
             self.customers_sheet.update(f"A{row_idx}:L{row_idx}", [row_values])
-            self._invalidate_customers_cache()
+            # Update cache in-place if it exists
+            if self._customers_cache is not None:
+                timestamp, cached_customers = self._customers_cache
+                for idx, c in enumerate(cached_customers):
+                    if c.id == customer.id:
+                        cached_customers[idx] = customer
+                        break
+                self._customers_cache = (timestamp, cached_customers)
 
         # Generate transaction log if differences exist
         jar_diff = customer.jar - old_jar
@@ -481,7 +493,10 @@ class GoogleSheetsClient:
 
         with sheets_lock:
             self.customers_sheet.delete_rows(row_idx)
-            self._customers_cache = None  # Force full cache invalidation after delete
+            # Update cache in-place if it exists
+            if self._customers_cache is not None:
+                timestamp, cached_customers = self._customers_cache
+                self._customers_cache = (timestamp, [c for c in cached_customers if c.id != customer_id])
 
         # Cascading delete transactions (Run in background thread to avoid blocking request thread)
         threading.Thread(target=self.delete_transactions_by_customer, args=(customer_id,), daemon=True).start()
@@ -628,7 +643,12 @@ class GoogleSheetsClient:
                 [row_values],
                 value_input_option="USER_ENTERED"
             )
-            self._invalidate_transactions_cache()
+            # Update cache in-place if it exists
+            if self._transactions_cache is not None:
+                timestamp, cached_txns = self._transactions_cache
+                if not any(t.id == txn.id for t in cached_txns):
+                    cached_txns.append(txn)
+                self._transactions_cache = (timestamp, cached_txns)
 
         # Sync customer's sheet in background thread
         threading.Thread(target=self.sync_customer_sheet, args=(customer_id,), daemon=True).start()
@@ -640,28 +660,39 @@ class GoogleSheetsClient:
         if not self.initialized:
             return None
 
+        # Find transaction in cached/fetched list
+        txns = self.get_all_transactions()
+        txn = None
+        for t in txns:
+            try:
+                curr_id = int(t.id)
+            except:
+                curr_id = t.id
+            if curr_id == txn_id:
+                txn = t
+                break
+
+        if not txn:
+            return None
+
+        # Find row index using col_values(1)
         with sheets_lock:
-            records = self.transactions_sheet.get_all_records()
+            id_list = self.transactions_sheet.col_values(1)
 
         row_idx = -1
-        target_record = None
-        for idx, r in enumerate(records):
+        for idx, tid in enumerate(id_list):
             try:
-                curr_id = int(r.get("id"))
+                curr_id = int(tid)
             except:
-                curr_id = r.get("id")
-                
+                curr_id = tid
             if curr_id == txn_id:
-                row_idx = idx + 2
-                target_record = r
+                row_idx = idx + 1
                 break
 
         if row_idx == -1:
             return None
 
-        txn = self._row_to_transaction(target_record)
         now = datetime.now()
-
         if "date" in data and data["date"]:
             if isinstance(data["date"], datetime):
                 txn.date = data["date"]
@@ -676,7 +707,19 @@ class GoogleSheetsClient:
         row_values = self._object_to_transaction_row(txn)
         with sheets_lock:
             self.transactions_sheet.update(f"A{row_idx}:I{row_idx}", [row_values])
-            self._invalidate_transactions_cache()
+            
+            # Update cache in-place
+            if self._transactions_cache is not None:
+                timestamp, cached_txns = self._transactions_cache
+                for idx, t in enumerate(cached_txns):
+                    try:
+                        curr_id = int(t.id)
+                    except:
+                        curr_id = t.id
+                    if curr_id == txn_id:
+                        cached_txns[idx] = txn
+                        break
+                self._transactions_cache = (timestamp, cached_txns)
 
         # Sync customer's sheet
         self.sync_customer_sheet(txn.customer_id)
@@ -688,20 +731,35 @@ class GoogleSheetsClient:
         if not self.initialized:
             return False
 
+        # Find transaction to get customer_id
+        txns = self.get_all_transactions()
+        txn = None
+        for t in txns:
+            try:
+                curr_id = int(t.id)
+            except:
+                curr_id = t.id
+            if curr_id == txn_id:
+                txn = t
+                break
+
+        if not txn:
+            return False
+
+        customer_id = txn.customer_id
+
+        # Find row index using col_values(1)
         with sheets_lock:
-            records = self.transactions_sheet.get_all_records()
+            id_list = self.transactions_sheet.col_values(1)
 
         row_idx = -1
-        customer_id = None
-        for idx, r in enumerate(records):
+        for idx, tid in enumerate(id_list):
             try:
-                curr_id = int(r.get("id"))
+                curr_id = int(tid)
             except:
-                curr_id = r.get("id")
-
+                curr_id = tid
             if curr_id == txn_id:
-                row_idx = idx + 2
-                customer_id = str(r.get("customer_id", ""))
+                row_idx = idx + 1
                 break
 
         if row_idx == -1:
@@ -709,7 +767,10 @@ class GoogleSheetsClient:
 
         with sheets_lock:
             self.transactions_sheet.delete_rows(row_idx)
-            self._invalidate_transactions_cache()
+            # Update cache in-place
+            if self._transactions_cache is not None:
+                timestamp, cached_txns = self._transactions_cache
+                self._transactions_cache = (timestamp, [t for t in cached_txns if t.id != txn_id])
 
         # Sync customer's sheet
         if customer_id:
@@ -722,15 +783,14 @@ class GoogleSheetsClient:
         if not self.initialized:
             return False
 
-        # Read transactions and delete matched rows
-        # To avoid index shifting problems, we delete rows from bottom to top
+        # Find matching transactions rows using col_values(2) (customer_id column)
         with sheets_lock:
-            records = self.transactions_sheet.get_all_records()
-            
+            cust_ids = self.transactions_sheet.col_values(2)
+
         rows_to_delete = []
-        for idx, r in enumerate(records):
-            if str(r.get("customer_id")) == customer_id:
-                rows_to_delete.append(idx + 2)
+        for idx, cid in enumerate(cust_ids):
+            if str(cid) == customer_id:
+                rows_to_delete.append(idx + 1)
 
         if not rows_to_delete:
             return True
@@ -740,7 +800,10 @@ class GoogleSheetsClient:
         with sheets_lock:
             for r_idx in rows_to_delete:
                 self.transactions_sheet.delete_rows(r_idx)
-            self._invalidate_transactions_cache()
+            # Update cache in-place
+            if self._transactions_cache is not None:
+                timestamp, cached_txns = self._transactions_cache
+                self._transactions_cache = (timestamp, [t for t in cached_txns if t.customer_id != customer_id])
 
         return True
 
