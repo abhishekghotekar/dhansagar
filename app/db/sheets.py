@@ -95,7 +95,7 @@ class GoogleSheetsClient:
         self._worksheet_cache = {}        # maps customer_id -> Worksheet object
         self._customers_cache = None      # (timestamp, list of CustomerObj)
         self._transactions_cache = None   # (timestamp, list of TransactionObj)
-        self._cache_duration = 5.0        # Cache data for 5 seconds
+        self._cache_duration = 30.0       # Cache data for 30 seconds to reduce API 429 rate limit hits
 
     def initialize(self):
         if self.initialized:
@@ -296,14 +296,13 @@ class GoogleSheetsClient:
         if not self.initialized:
             raise Exception("Google Sheets backend not initialized.")
 
-        # Check duplicate
+        # Check duplicate phone number — raise error instead of silently updating
         cust_num = data.get("customer_number")
         if cust_num:
             existing = self.get_all_customers()
             for c in existing:
                 if c.customer_number == cust_num:
-                    self.update_customer(c.id, data)
-                    return c.id
+                    raise Exception(f"Customer with phone number '{cust_num}' already exists (Name: {c.customer_name}). Use update instead.")
 
         doc_id = str(uuid.uuid4())
         now = datetime.now()
@@ -339,16 +338,16 @@ class GoogleSheetsClient:
 
         # Create initial transaction log if jar count or paid is recorded
         if customer.jar or customer.paid:
-            self.add_transaction({
+            threading.Thread(target=self.add_transaction, args=({
                 "customer_id": doc_id,
                 "date": parsed_date,
                 "jar_count": customer.jar,
                 "amount": customer.paid,
                 "pending": customer.pending,
                 "description": "Initial Record"
-            })
+            },), daemon=True).start()
         else:
-            self.sync_customer_sheet(doc_id)
+            threading.Thread(target=self.sync_customer_sheet, args=(doc_id,), daemon=True).start()
 
         return doc_id
 
@@ -357,21 +356,21 @@ class GoogleSheetsClient:
         if not self.initialized:
             return False
 
+        customer = self.get_customer(customer_id)
+        if not customer:
+            return False
+
         with sheets_lock:
-            records = self.customers_sheet.get_all_records()
+            id_list = self.customers_sheet.col_values(1)
             
         row_idx = -1
-        target_record = None
-        for idx, r in enumerate(records):
-            if str(r.get("id")) == customer_id:
-                row_idx = idx + 2  # 1-based index + header offset
-                target_record = r
+        for idx, cid in enumerate(id_list):
+            if str(cid) == customer_id:
+                row_idx = idx + 1
                 break
 
         if row_idx == -1:
             return False
-
-        customer = self._row_to_customer(target_record)
         
         # Track differences for Transactions
         old_jar = customer.jar
@@ -412,16 +411,16 @@ class GoogleSheetsClient:
             if paid_diff > 0: description = f"Paid {paid_diff}"
             if jar_diff > 0 and paid_diff > 0: description = f"Added {jar_diff} jars & Paid {paid_diff}"
 
-            self.add_transaction({
+            threading.Thread(target=self.add_transaction, args=({
                 "customer_id": customer_id,
                 "date": customer.date or now,
                 "jar_count": jar_diff,
                 "amount": paid_diff,
                 "pending": customer.pending,
                 "description": description
-            })
+            },), daemon=True).start()
         else:
-            self.sync_customer_sheet(customer_id)
+            threading.Thread(target=self.sync_customer_sheet, args=(customer_id,), daemon=True).start()
 
         return True
 
@@ -444,12 +443,12 @@ class GoogleSheetsClient:
                     print(f"Error deleting customer worksheet: {e}")
 
         with sheets_lock:
-            records = self.customers_sheet.get_all_records()
+            id_list = self.customers_sheet.col_values(1)
             
         row_idx = -1
-        for idx, r in enumerate(records):
-            if str(r.get("id")) == customer_id:
-                row_idx = idx + 2
+        for idx, cid in enumerate(id_list):
+            if str(cid) == customer_id:
+                row_idx = idx + 1
                 break
 
         if row_idx == -1:
@@ -459,8 +458,8 @@ class GoogleSheetsClient:
             self.customers_sheet.delete_rows(row_idx)
             self._invalidate_customers_cache()
 
-        # Cascading delete transactions
-        self.delete_transactions_by_customer(customer_id)
+        # Cascading delete transactions (Run in background thread to avoid blocking request thread)
+        threading.Thread(target=self.delete_transactions_by_customer, args=(customer_id,), daemon=True).start()
         return True
 
     def search_customers(self, query_str: str):
@@ -586,8 +585,8 @@ class GoogleSheetsClient:
             self.transactions_sheet.append_row(row_values)
             self._invalidate_transactions_cache()
 
-        # Sync customer's sheet
-        self.sync_customer_sheet(customer_id)
+        # Sync customer's sheet in background thread
+        threading.Thread(target=self.sync_customer_sheet, args=(customer_id,), daemon=True).start()
 
         return txn
 
@@ -747,21 +746,6 @@ class GoogleSheetsClient:
         if customer_id in self._worksheet_cache:
             return self._worksheet_cache[customer_id]
             
-        # Fallback to suffix search only if bulk fails/cannot find it
-        for suffix in ["", " (2)", " (3)", " (4)", " (5)"]:
-            title = f"{name}{suffix}"
-            try:
-                with sheets_lock:
-                    sheet = self.spreadsheet.worksheet(title)
-                    val = sheet.cell(1, 1).value
-                if val and val.startswith("ID:") and val.split(":")[1].strip() == customer_id:
-                    self._worksheet_cache[customer_id] = sheet
-                    return sheet
-            except gspread.exceptions.WorksheetNotFound:
-                continue
-            except Exception as e:
-                print(f"Error checking worksheet {title} in fallback: {e}")
-                
         return None
 
     def _get_unique_sheet_title(self, desired_name: str, customer_id: str):
@@ -776,13 +760,18 @@ class GoogleSheetsClient:
             
         title = sanitized_name
         counter = 1
-        while True:
-            try:
-                sheet = self.spreadsheet.worksheet(title)
-                counter += 1
-                title = f"{sanitized_name} ({counter})"
-            except gspread.exceptions.WorksheetNotFound:
-                break
+        
+        try:
+            with sheets_lock:
+                all_sheets = self.spreadsheet.worksheets()
+            existing_titles = {s.title for s in all_sheets}
+        except Exception as e:
+            print(f"Error fetching sheets for unique title: {e}")
+            existing_titles = set()
+            
+        while title in existing_titles:
+            counter += 1
+            title = f"{sanitized_name} ({counter})"
         return title
 
     def sync_customer_sheet(self, customer_id: str):
@@ -864,39 +853,78 @@ class GoogleSheetsClient:
                 sheet.clear()
                 sheet.update("A1", rows)
                 
-                sheet.format("A4:E4", {
-                    "backgroundColor": {
-                        "red": 0.082,
-                        "green": 0.133,
-                        "blue": 0.22
-                    },
-                    "textFormat": {
-                        "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
-                        "fontSize": 11,
-                        "bold": True
-                    },
-                    "horizontalAlignment": "CENTER"
-                })
-                
-                sheet.format("A2:B2", {
-                    "textFormat": {
-                        "fontSize": 12,
-                        "bold": True
-                    }
-                })
-                
-                sheet.format("A1", {
-                    "textFormat": {
-                        "foregroundColor": {"red": 0.6, "green": 0.6, "blue": 0.6},
-                        "fontSize": 8
-                    }
-                })
-                
-                # Auto-resize columns to fit content automatically
+                # Batch all format calls into a single API request to reduce rate limit hits
                 try:
-                    sheet.columns_auto_resize(0, 5)
+                    sheet.spreadsheet.batch_update({
+                        "requests": [
+                            {
+                                "repeatCell": {
+                                    "range": {
+                                        "sheetId": sheet.id,
+                                        "startRowIndex": 3, "endRowIndex": 4,
+                                        "startColumnIndex": 0, "endColumnIndex": 5
+                                    },
+                                    "cell": {
+                                        "userEnteredFormat": {
+                                            "backgroundColor": {"red": 0.082, "green": 0.133, "blue": 0.22},
+                                            "textFormat": {
+                                                "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+                                                "fontSize": 11,
+                                                "bold": True
+                                            },
+                                            "horizontalAlignment": "CENTER"
+                                        }
+                                    },
+                                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
+                                }
+                            },
+                            {
+                                "repeatCell": {
+                                    "range": {
+                                        "sheetId": sheet.id,
+                                        "startRowIndex": 1, "endRowIndex": 2,
+                                        "startColumnIndex": 0, "endColumnIndex": 2
+                                    },
+                                    "cell": {
+                                        "userEnteredFormat": {
+                                            "textFormat": {"fontSize": 12, "bold": True}
+                                        }
+                                    },
+                                    "fields": "userEnteredFormat.textFormat"
+                                }
+                            },
+                            {
+                                "repeatCell": {
+                                    "range": {
+                                        "sheetId": sheet.id,
+                                        "startRowIndex": 0, "endRowIndex": 1,
+                                        "startColumnIndex": 0, "endColumnIndex": 1
+                                    },
+                                    "cell": {
+                                        "userEnteredFormat": {
+                                            "textFormat": {
+                                                "foregroundColor": {"red": 0.6, "green": 0.6, "blue": 0.6},
+                                                "fontSize": 8
+                                            }
+                                        }
+                                    },
+                                    "fields": "userEnteredFormat.textFormat"
+                                }
+                            },
+                            {
+                                "autoResizeDimensions": {
+                                    "dimensions": {
+                                        "sheetId": sheet.id,
+                                        "dimension": "COLUMNS",
+                                        "startIndex": 0,
+                                        "endIndex": 5
+                                    }
+                                }
+                            }
+                        ]
+                    })
                 except Exception as ex:
-                    print(f"Error auto-resizing columns: {ex}")
+                    print(f"Error applying batch formatting: {ex}")
             except Exception as e:
                 print(f"Error updating or formatting customer worksheet: {e}")
                 return False
