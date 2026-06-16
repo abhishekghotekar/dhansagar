@@ -264,20 +264,31 @@ class GoogleSheetsClient:
 
     # --- CUSTOMER CRUD METHODS ---
 
-    def get_all_customers(self, exclude_monthly=False):
+    def get_all_customers(self, exclude_monthly=False, force_refresh=False):
         self.initialize()
         if not self.initialized:
             return []
             
         now_ts = time.time()
         with sheets_lock:
-            if self._customers_cache and (now_ts - self._customers_cache[0] < self._cache_duration):
+            if not force_refresh and self._customers_cache and (now_ts - self._customers_cache[0] < self._cache_duration):
                 customers = self._customers_cache[1]
             else:
-                records = self.customers_sheet.get_all_records()
+                # Use get_all_values() instead of get_all_records() because
+                # get_all_records() silently STOPS at the first empty row,
+                # causing customers added after an empty row to be invisible.
+                all_values = self.customers_sheet.get_all_values()
                 customers = []
-                for r in records:
-                    customers.append(self._row_to_customer(r))
+                if all_values:
+                    headers = all_values[0]  # First row = headers
+                    for row in all_values[1:]:  # Skip header row
+                        if not any(row):  # Skip fully empty rows
+                            continue
+                        # Pad row to header length if needed
+                        padded = row + [''] * (len(headers) - len(row))
+                        row_dict = dict(zip(headers, padded))
+                        if row_dict.get('id'):  # Only include rows with a valid ID
+                            customers.append(self._row_to_customer(row_dict))
                 self._customers_cache = (now_ts, customers)
             
         if exclude_monthly:
@@ -333,8 +344,22 @@ class GoogleSheetsClient:
 
         row_values = self._object_to_customer_row(customer)
         with sheets_lock:
-            self.customers_sheet.append_row(row_values)
-            self._invalidate_customers_cache()
+            # Use explicit row targeting instead of append_row to avoid
+            # Google Sheets API "table detection" race condition where
+            # multiple rapid writes overwrite each other on the same row.
+            id_col = self.customers_sheet.col_values(1)
+            # Find last row with actual data in column A
+            last_data_row = 1
+            for i, val in enumerate(id_col):
+                if val and str(val).strip():
+                    last_data_row = i + 1
+            next_row = last_data_row + 1
+            self.customers_sheet.update(
+                f"A{next_row}:L{next_row}",
+                [row_values],
+                value_input_option="USER_ENTERED"
+            )
+            self._customers_cache = None  # Force full cache invalidation after add
 
         # Create initial transaction log if jar count or paid is recorded
         if customer.jar or customer.paid:
@@ -456,7 +481,7 @@ class GoogleSheetsClient:
 
         with sheets_lock:
             self.customers_sheet.delete_rows(row_idx)
-            self._invalidate_customers_cache()
+            self._customers_cache = None  # Force full cache invalidation after delete
 
         # Cascading delete transactions (Run in background thread to avoid blocking request thread)
         threading.Thread(target=self.delete_transactions_by_customer, args=(customer_id,), daemon=True).start()
@@ -490,10 +515,19 @@ class GoogleSheetsClient:
             if self._transactions_cache and (now_ts - self._transactions_cache[0] < self._cache_duration):
                 transactions = self._transactions_cache[1]
             else:
-                records = self.transactions_sheet.get_all_records()
+                # Use get_all_values() instead of get_all_records() — same fix
+                # as customers: avoids silent stop at empty rows.
+                all_values = self.transactions_sheet.get_all_values()
                 transactions = []
-                for r in records:
-                    transactions.append(self._row_to_transaction(r))
+                if all_values:
+                    headers = all_values[0]
+                    for row in all_values[1:]:
+                        if not any(row):
+                            continue
+                        padded = row + [''] * (len(headers) - len(row))
+                        row_dict = dict(zip(headers, padded))
+                        if row_dict.get('id'):  # Only include rows with a valid ID
+                            transactions.append(self._row_to_transaction(row_dict))
                 self._transactions_cache = (now_ts, transactions)
 
         return list(transactions)
@@ -582,7 +616,18 @@ class GoogleSheetsClient:
 
         row_values = self._object_to_transaction_row(txn)
         with sheets_lock:
-            self.transactions_sheet.append_row(row_values)
+            # Use explicit row targeting (same fix as store_customer)
+            id_col = self.transactions_sheet.col_values(1)
+            last_data_row = 1
+            for i, val in enumerate(id_col):
+                if val and str(val).strip():
+                    last_data_row = i + 1
+            next_row = last_data_row + 1
+            self.transactions_sheet.update(
+                f"A{next_row}:I{next_row}",
+                [row_values],
+                value_input_option="USER_ENTERED"
+            )
             self._invalidate_transactions_cache()
 
         # Sync customer's sheet in background thread
