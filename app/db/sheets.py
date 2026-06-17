@@ -32,6 +32,15 @@ class CustomerObj:
         self.transactions = []
 
     def dict(self):
+        formatted_txns = []
+        for t in self.transactions:
+            formatted_txns.append({
+                "id": str(t.id),
+                "date": t.date.isoformat() if isinstance(t.date, datetime) else t.date,
+                "jar": t.jar_count,
+                "paid": t.amount,
+                "pending": t.pending
+            })
         return {
             "id": self.id,
             "customer_name": self.customer_name,
@@ -44,8 +53,10 @@ class CustomerObj:
             "date": self.date.isoformat() if isinstance(self.date, datetime) else self.date,
             "is_monthly": self.is_monthly,
             "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
-            "updated_at": self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at
+            "updated_at": self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at,
+            "transactions": formatted_txns
         }
+
 
 
 class TransactionObj:
@@ -291,6 +302,11 @@ class GoogleSheetsClient:
                             customers.append(self._row_to_customer(row_dict))
                 self._customers_cache = (now_ts, customers)
             
+        # Fetch and associate transactions for each customer
+        txns = self.get_all_transactions()
+        for c in customers:
+            c.transactions = [t for t in txns if t.customer_id == c.id]
+
         if exclude_monthly:
             return [c for c in customers if not c.is_monthly]
         return list(customers)
@@ -438,26 +454,34 @@ class GoogleSheetsClient:
                         break
                 self._customers_cache = (timestamp, cached_customers)
 
-        # Generate transaction log if differences exist
-        jar_diff = customer.jar - old_jar
-        paid_diff = customer.paid - old_paid
-
-        if jar_diff != 0 or abs(paid_diff) > 0.001:
-            description = "Update"
-            if jar_diff > 0: description = f"Added {jar_diff} jars"
-            if paid_diff > 0: description = f"Paid {paid_diff}"
-            if jar_diff > 0 and paid_diff > 0: description = f"Added {jar_diff} jars & Paid {paid_diff}"
-
-            threading.Thread(target=self.add_transaction, args=({
-                "customer_id": customer_id,
-                "date": customer.date or now,
-                "jar_count": jar_diff,
-                "amount": paid_diff,
-                "pending": customer.pending,
-                "description": description
-            },), daemon=True).start()
+        # If transactions list is provided, synchronize it directly.
+        # Otherwise, generate transaction log if differences exist.
+        if "transactions" in data and data["transactions"] is not None:
+            threading.Thread(
+                target=self.sync_customer_transactions,
+                args=(customer_id, data["transactions"]),
+                daemon=True
+            ).start()
         else:
-            threading.Thread(target=self.sync_customer_sheet, args=(customer_id,), daemon=True).start()
+            jar_diff = customer.jar - old_jar
+            paid_diff = customer.paid - old_paid
+
+            if jar_diff != 0 or abs(paid_diff) > 0.001:
+                description = "Update"
+                if jar_diff > 0: description = f"Added {jar_diff} jars"
+                if paid_diff > 0: description = f"Paid {paid_diff}"
+                if jar_diff > 0 and paid_diff > 0: description = f"Added {jar_diff} jars & Paid {paid_diff}"
+
+                threading.Thread(target=self.add_transaction, args=({
+                    "customer_id": customer_id,
+                    "date": customer.date or now,
+                    "jar_count": jar_diff,
+                    "amount": paid_diff,
+                    "pending": customer.pending,
+                    "description": description
+                },), daemon=True).start()
+            else:
+                threading.Thread(target=self.sync_customer_sheet, args=(customer_id,), daemon=True).start()
 
         return True
 
@@ -805,6 +829,69 @@ class GoogleSheetsClient:
                 timestamp, cached_txns = self._transactions_cache
                 self._transactions_cache = (timestamp, [t for t in cached_txns if t.customer_id != customer_id])
 
+        return True
+
+    def sync_customer_transactions(self, customer_id: str, client_txns: list):
+        self.initialize()
+        if not self.initialized:
+            return False
+
+        now = datetime.now()
+        
+        # 1. Map client transactions to row values
+        rows_to_add = []
+        for t in client_txns:
+            date_val = t.get("date")
+            parsed_date = self._parse_datetime(date_val) or now
+            
+            txn = TransactionObj(
+                id=t.get("id", ""),
+                customer_id=customer_id,
+                date=parsed_date,
+                jar_count=int(t.get("jar", 0)),
+                amount=float(t.get("paid", 0.0)),
+                pending=float(t.get("pending", 0.0)),
+                description="Delivery Log",
+                created_at=now,
+                updated_at=now
+            )
+            rows_to_add.append(self._object_to_transaction_row(txn))
+
+        with sheets_lock:
+            # 2. Find and delete all existing transactions for this customer
+            cust_ids = self.transactions_sheet.col_values(2)
+            rows_to_delete = []
+            for idx, cid in enumerate(cust_ids):
+                if str(cid) == customer_id:
+                    rows_to_delete.append(idx + 1)
+            
+            if rows_to_delete:
+                rows_to_delete.sort(reverse=True)
+                for r in rows_to_delete:
+                    self.transactions_sheet.delete_rows(r)
+
+            # 3. Append new transactions
+            if rows_to_add:
+                # Find last row with actual data in column A
+                id_col = self.transactions_sheet.col_values(1)
+                last_data_row = 1
+                for i, val in enumerate(id_col):
+                    if val and str(val).strip():
+                        last_data_row = i + 1
+                next_row = last_data_row + 1
+                end_row = next_row + len(rows_to_add) - 1
+                
+                self.transactions_sheet.update(
+                    f"A{next_row}:I{end_row}",
+                    rows_to_add,
+                    value_input_option="USER_ENTERED"
+                )
+
+        # 4. Invalidate cache so they are reloaded
+        self._invalidate_transactions_cache()
+        
+        # 5. Sync the customer worksheet (ledger sheet) for this customer
+        self.sync_customer_sheet(customer_id)
         return True
 
     def _find_customer_worksheet_by_id(self, customer_id: str, name: str):

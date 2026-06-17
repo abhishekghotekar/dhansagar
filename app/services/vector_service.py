@@ -31,6 +31,15 @@ def search_customer(query: str, db=None):
     res = sheets_client.search_customers(query)
     formatted_results = []
     for customer in res:
+        formatted_txns = []
+        for t in customer.transactions:
+            formatted_txns.append({
+                "id": str(t.id),
+                "date": t.date.isoformat() if t.date else "",
+                "jar": t.jar_count,
+                "paid": t.amount,
+                "pending": t.pending
+            })
         item = {
             "id": customer.id,
             "customer_name": customer.customer_name,
@@ -44,6 +53,7 @@ def search_customer(query: str, db=None):
             "is_monthly": customer.is_monthly,
             "created_at": customer.created_at.isoformat() if customer.created_at else None,
             "updated_at": customer.updated_at.isoformat() if customer.updated_at else None,
+            "transactions": formatted_txns,
             "distance": 0.0 # Mock distance
         }
         item['document'] = f"{customer.customer_name} | {customer.customer_address} | {customer.customer_number}"

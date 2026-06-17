@@ -1,5 +1,13 @@
 from pydantic import BaseModel, Field
 from datetime import datetime
+from typing import List, Optional
+
+class TransactionSchema(BaseModel):
+    id: str
+    date: str
+    jar: int
+    paid: float
+    pending: float
 
 class Customer(BaseModel):
     customer_name: str = Field(..., example="Avinash")
@@ -11,6 +19,7 @@ class Customer(BaseModel):
     success: bool = False
     date: str | None = None
     is_monthly: bool = False
+    transactions: Optional[List[TransactionSchema]] = None
 
     class Config:
         from_attributes = True
@@ -25,3 +34,5 @@ class CustomerUpdate(BaseModel):
     success: bool | None = None
     date: str | None = None
     is_monthly: bool | None = None
+    transactions: Optional[List[TransactionSchema]] = None
+
