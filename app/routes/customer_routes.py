@@ -55,8 +55,8 @@ def search(q: str, db = Depends(get_db)):
 
 # 📄 Get all customers
 @router.get("/all-customers")
-def get_all(db = Depends(get_db)):
-    data = get_all_customers(db, exclude_monthly=True)
+def get_all(force_refresh: bool = False, db = Depends(get_db)):
+    data = get_all_customers(db, exclude_monthly=True, force_refresh=force_refresh)
     return [c.dict() for c in data]
 
 

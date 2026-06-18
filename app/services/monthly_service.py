@@ -3,9 +3,9 @@ from app.db.sheets import sheets_client
 
 # --- Monthly / Transaction Services ---
 
-def get_monthly_customers(db=None):
-    customers = [c for c in sheets_client.get_all_customers() if c.is_monthly]
-    txns = sheets_client.get_all_transactions()
+def get_monthly_customers(db=None, force_refresh: bool = False):
+    customers = [c for c in sheets_client.get_all_customers(force_refresh=force_refresh) if c.is_monthly]
+    txns = sheets_client.get_all_transactions(force_refresh=force_refresh)
     for c in customers:
         c.transactions = [t for t in txns if t.customer_id == c.id]
     return customers
@@ -19,8 +19,8 @@ def toggle_monthly_status_service(customer_id: str, is_monthly: bool, db=None):
 def create_transaction(data: dict, db=None):
     return sheets_client.add_transaction(data)
 
-def get_transactions_by_customer(customer_id: str, db=None):
-    return sheets_client.get_transactions_by_customer(customer_id)
+def get_transactions_by_customer(customer_id: str, db=None, force_refresh: bool = False):
+    return sheets_client.get_transactions_by_customer(customer_id, force_refresh=force_refresh)
 
 def update_transaction(transaction_id: int, data: dict, db=None):
     return sheets_client.update_transaction(transaction_id, data)

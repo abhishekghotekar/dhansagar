@@ -61,9 +61,8 @@ def search_customer(query: str, db=None):
     return formatted_results
 
 
-# 📄 Get all customers from Google Sheets
-def get_all_customers(db=None, exclude_monthly: bool = False):
-    customers = sheets_client.get_all_customers(exclude_monthly=exclude_monthly)
+def get_all_customers(db=None, exclude_monthly: bool = False, force_refresh: bool = False):
+    customers = sheets_client.get_all_customers(exclude_monthly=exclude_monthly, force_refresh=force_refresh)
     try:
         customers.sort(key=lambda x: x.updated_at or x.created_at or datetime.min, reverse=True)
     except:

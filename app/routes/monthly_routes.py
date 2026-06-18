@@ -23,14 +23,14 @@ router = APIRouter(prefix="/monthly", tags=["Monthly Credit"])
 
 # 1. Get Monthly Credit Customers
 @router.get("/customers")
-def get_monthly_customers_route(db = Depends(get_db)):
-    customers = get_monthly_customers(db)
+def get_monthly_customers_route(force_refresh: bool = False, db = Depends(get_db)):
+    customers = get_monthly_customers(db, force_refresh=force_refresh)
     return [c.dict() for c in customers]
 
 # 2. Get Transactions for a Customer
 @router.get("/transactions/{customer_id}")
-def get_transactions(customer_id: str, db = Depends(get_db)):
-    transactions = get_transactions_by_customer(customer_id, db)
+def get_transactions(customer_id: str, force_refresh: bool = False, db = Depends(get_db)):
+    transactions = get_transactions_by_customer(customer_id, db, force_refresh=force_refresh)
     customer = get_customer_by_id(customer_id, db)
     
     # Calculate totals

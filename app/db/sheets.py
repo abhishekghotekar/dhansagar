@@ -106,7 +106,7 @@ class GoogleSheetsClient:
         self._worksheet_cache = {}        # maps customer_id -> Worksheet object
         self._customers_cache = None      # (timestamp, list of CustomerObj)
         self._transactions_cache = None   # (timestamp, list of TransactionObj)
-        self._cache_duration = 30.0       # Cache data for 30 seconds to reduce API 429 rate limit hits
+        self._cache_duration = 2.0       # Cache data for 2 seconds to reduce API 429 rate limit hits
 
     def initialize(self):
         if self.initialized:
@@ -303,7 +303,7 @@ class GoogleSheetsClient:
                 self._customers_cache = (now_ts, customers)
             
         # Fetch and associate transactions for each customer
-        txns = self.get_all_transactions()
+        txns = self.get_all_transactions(force_refresh=force_refresh)
         for c in customers:
             c.transactions = [t for t in txns if t.customer_id == c.id]
 
@@ -576,14 +576,14 @@ class GoogleSheetsClient:
 
     # --- TRANSACTION CRUD METHODS ---
 
-    def get_all_transactions(self):
+    def get_all_transactions(self, force_refresh=False):
         self.initialize()
         if not self.initialized:
             return []
 
         now_ts = time.time()
         with sheets_lock:
-            if self._transactions_cache and (now_ts - self._transactions_cache[0] < self._cache_duration):
+            if not force_refresh and self._transactions_cache and (now_ts - self._transactions_cache[0] < self._cache_duration):
                 transactions = self._transactions_cache[1]
             else:
                 # Use get_all_values() instead of get_all_records() — same fix
@@ -603,8 +603,8 @@ class GoogleSheetsClient:
 
         return list(transactions)
 
-    def get_transactions_by_customer(self, customer_id: str):
-        txns = self.get_all_transactions()
+    def get_transactions_by_customer(self, customer_id: str, force_refresh=False):
+        txns = self.get_all_transactions(force_refresh=force_refresh)
         filtered = [t for t in txns if t.customer_id == customer_id]
         # Sort descending by date
         filtered.sort(key=lambda x: x.date or datetime.min, reverse=True)
