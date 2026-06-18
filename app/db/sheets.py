@@ -457,11 +457,43 @@ class GoogleSheetsClient:
         # If transactions list is provided, synchronize it directly.
         # Otherwise, generate transaction log if differences exist.
         if "transactions" in data and data["transactions"] is not None:
-            threading.Thread(
-                target=self.sync_customer_transactions,
-                args=(customer_id, data["transactions"]),
-                daemon=True
-            ).start()
+            # Safely check if incoming transactions are actually different to prevent accidental wipe
+            existing_txns = self.get_transactions_by_customer(customer_id)
+            existing_simplified = []
+            for t in existing_txns:
+                existing_simplified.append({
+                    "id": str(t.id),
+                    "date": t.date.strftime("%Y-%m-%d") if t.date else "",
+                    "jar": int(t.jar_count),
+                    "paid": float(t.amount),
+                    "pending": float(t.pending)
+                })
+            
+            incoming_simplified = []
+            for t in data["transactions"]:
+                date_val = t.get("date")
+                parsed_date = self._parse_datetime(date_val)
+                date_str = parsed_date.strftime("%Y-%m-%d") if parsed_date else ""
+                incoming_simplified.append({
+                    "id": str(t.get("id", "")),
+                    "date": date_str,
+                    "jar": int(t.get("jar", 0)),
+                    "paid": float(t.get("paid", 0.0)),
+                    "pending": float(t.get("pending", 0.0))
+                })
+            
+            # Sort both to ensure order doesn't fail comparison
+            existing_simplified.sort(key=lambda x: (x["id"], x["date"]))
+            incoming_simplified.sort(key=lambda x: (x["id"], x["date"]))
+            
+            if existing_simplified != incoming_simplified:
+                threading.Thread(
+                    target=self.sync_customer_transactions,
+                    args=(customer_id, data["transactions"]),
+                    daemon=True
+                ).start()
+            else:
+                threading.Thread(target=self.sync_customer_sheet, args=(customer_id,), daemon=True).start()
         else:
             jar_diff = customer.jar - old_jar
             paid_diff = customer.paid - old_paid

@@ -35,7 +35,7 @@ def add_customer(customer: Customer, db = Depends(get_db)):
 @router.put("/update/{doc_id}")
 def update(doc_id: str, customer: Customer, db = Depends(get_db)):
     try:
-        success = update_customer(doc_id, customer.dict(), db)
+        success = update_customer(doc_id, customer.dict(exclude_unset=True), db)
         if not success:
             raise HTTPException(status_code=404, detail="Customer not found")
         
@@ -57,7 +57,8 @@ def search(q: str, db = Depends(get_db)):
 @router.get("/all-customers")
 def get_all(db = Depends(get_db)):
     data = get_all_customers(db, exclude_monthly=True)
-    return data
+    return [c.dict() for c in data]
+
 
 
 # 📥 Download PDF

@@ -25,7 +25,7 @@ router = APIRouter(prefix="/monthly", tags=["Monthly Credit"])
 @router.get("/customers")
 def get_monthly_customers_route(db = Depends(get_db)):
     customers = get_monthly_customers(db)
-    return customers
+    return [c.dict() for c in customers]
 
 # 2. Get Transactions for a Customer
 @router.get("/transactions/{customer_id}")
@@ -59,8 +59,21 @@ def get_transactions(customer_id: str, db = Depends(get_db)):
     
     total_pending = total_cost - total_paid
     
+    # Format transactions to have client-expected keys (jar and paid instead of jar_count and amount)
+    formatted_txns = []
+    for t in transactions:
+        formatted_txns.append({
+            "id": str(t.id),
+            "customer_id": t.customer_id,
+            "date": t.date.isoformat() if isinstance(t.date, datetime) else t.date,
+            "jar": t.jar_count,
+            "paid": t.amount,
+            "pending": t.pending,
+            "description": t.description or ""
+        })
+    
     return {
-        "transactions": transactions,
+        "transactions": formatted_txns,
         "summary": {
             "customer_name": customer.customer_name if customer else "Unknown",
             "total_jars": total_jars,
