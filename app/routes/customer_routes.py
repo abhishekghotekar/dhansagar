@@ -180,20 +180,27 @@ def get_customer_records_by_date(
 
         txns = list(customer.transactions)
 
+        # --- Flexible date parser: accepts YYYY-MM-DD, YYYY/MM/DD, DD-MM-YYYY, DD/MM/YYYY ---
+        def _parse_date(date_str: str) -> datetime:
+            for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+                try:
+                    return datetime.strptime(date_str.strip(), fmt)
+                except ValueError:
+                    continue
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid date format '{date_str}'. Use YYYY-MM-DD or YYYY/MM/DD"
+            )
+
         # --- Date range filter ---
         if from_date:
-            try:
-                fd = datetime.strptime(from_date, "%Y-%m-%d")
-                txns = [t for t in txns if t.date and t.date.date() >= fd.date()]
-            except ValueError:
-                raise HTTPException(status_code=400, detail="from_date format should be YYYY-MM-DD")
+            fd = _parse_date(from_date)
+            txns = [t for t in txns if t.date and t.date.date() >= fd.date()]
 
         if to_date:
-            try:
-                td = datetime.strptime(to_date, "%Y-%m-%d")
-                txns = [t for t in txns if t.date and t.date.date() <= td.date()]
-            except ValueError:
-                raise HTTPException(status_code=400, detail="to_date format should be YYYY-MM-DD")
+            td = _parse_date(to_date)
+            txns = [t for t in txns if t.date and t.date.date() <= td.date()]
+
 
         # --- Date-wise sort ---
         reverse_order = (order.lower() == "desc")
