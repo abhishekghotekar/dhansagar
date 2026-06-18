@@ -95,6 +95,11 @@ class GoogleSheetsClient:
         self.spreadsheet = None
         self.initialized = False
         
+        # Lock for initialization and trackers
+        self._init_lock = threading.Lock()
+        self._last_init_attempt_time = 0.0
+        self._last_init_error = None
+        
         # Worksheet headers definition
         self.customer_headers = [
             "id", "customer_name", "customer_address", "customer_number", 
@@ -116,42 +121,82 @@ class GoogleSheetsClient:
         # - Every write (add/update/delete) fully invalidates cache → next read is always fresh
         self._cache_duration = 30.0
 
+    def _retry(self, func, *args, **kwargs):
+        import requests
+        import urllib3
+        max_retries = 5
+        delay = 1.0
+        backoff_factor = 2.0
+        
+        for attempt in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except gspread.exceptions.APIError as e:
+                status_code = getattr(e.response, "status_code", None)
+                if status_code in [429, 500, 502, 503, 504]:
+                    if attempt < max_retries - 1:
+                        print(f"Google Sheets API error {status_code} on attempt {attempt+1}/{max_retries}. Retrying in {delay}s...")
+                        time.sleep(delay)
+                        delay *= backoff_factor
+                        continue
+                raise e
+            except (requests.exceptions.RequestException, urllib3.exceptions.HTTPError) as e:
+                if attempt < max_retries - 1:
+                    print(f"Google Sheets connection/network error '{e}' on attempt {attempt+1}/{max_retries}. Retrying in {delay}s...")
+                    time.sleep(delay)
+                    delay *= backoff_factor
+                    continue
+                raise e
+
     def initialize(self):
         if self.initialized:
             return True
 
-        sheet_id = GOOGLE_SHEET_ID
-        creds_json = GOOGLE_SERVICE_ACCOUNT_DICT
-        creds_path = GOOGLE_SERVICE_ACCOUNT_JSON
-
-        if not sheet_id:
-            print("Google Sheets backend warning: GOOGLE_SHEET_ID is not configured in .env")
-            return False
-
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-
-        try:
-            if creds_json:
-                info = json.loads(creds_json)
-                creds = Credentials.from_service_account_info(info, scopes=scopes)
-            elif creds_path and os.path.exists(creds_path):
-                creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
-            else:
-                print(f"Google Sheets backend warning: Service account credentials not found. Checked GOOGLE_SERVICE_ACCOUNT_JSON={creds_path}")
+        with self._init_lock:
+            if self.initialized:
+                return True
+                
+            now = time.time()
+            if now - self._last_init_attempt_time < 10.0:
+                print(f"Skipping initialization retry: cooldown active (last attempt failed {(now - self._last_init_attempt_time):.1f}s ago with: {self._last_init_error})")
                 return False
 
-            self.client = gspread.authorize(creds)
-            self.spreadsheet = self.client.open_by_key(sheet_id)
-            self._ensure_worksheets()
-            self.initialized = True
-            print("Google Sheets backend initialized successfully!")
-            return True
-        except Exception as e:
-            print(f"Failed to initialize Google Sheets backend: {e}")
-            return False
+            self._last_init_attempt_time = now
+            sheet_id = GOOGLE_SHEET_ID
+            creds_json = GOOGLE_SERVICE_ACCOUNT_DICT
+            creds_path = GOOGLE_SERVICE_ACCOUNT_JSON
+
+            if not sheet_id:
+                print("Google Sheets backend warning: GOOGLE_SHEET_ID is not configured in .env")
+                return False
+
+            scopes = [
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive"
+            ]
+
+            try:
+                if creds_json:
+                    info = json.loads(creds_json)
+                    creds = Credentials.from_service_account_info(info, scopes=scopes)
+                elif creds_path and os.path.exists(creds_path):
+                    creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
+                else:
+                    print(f"Google Sheets backend warning: Service account credentials not found. Checked GOOGLE_SERVICE_ACCOUNT_JSON={creds_path}")
+                    return False
+
+                self.client = self._retry(gspread.authorize, creds)
+                self.spreadsheet = self._retry(self.client.open_by_key, sheet_id)
+                self._ensure_worksheets()
+                
+                self.initialized = True
+                self._last_init_error = None
+                print("Google Sheets backend initialized successfully!")
+                return True
+            except Exception as e:
+                self._last_init_error = f"{type(e).__name__}: {e}"
+                print(f"Failed to initialize Google Sheets backend: {e}")
+                return False
 
     def _invalidate_customers_cache(self):
         self._customers_cache = None
@@ -162,21 +207,21 @@ class GoogleSheetsClient:
     def _ensure_worksheets(self):
         # 1. Ensure 'customers' worksheet
         try:
-            self.customers_sheet = self.spreadsheet.worksheet("customers")
+            self.customers_sheet = self._retry(self.spreadsheet.worksheet, "customers")
         except gspread.exceptions.WorksheetNotFound:
-            self.customers_sheet = self.spreadsheet.add_worksheet("customers", rows="1000", cols="15")
-            self.customers_sheet.append_row(self.customer_headers)
+            self.customers_sheet = self._retry(self.spreadsheet.add_worksheet, "customers", rows="1000", cols="15")
+            self._retry(self.customers_sheet.append_row, self.customer_headers)
 
         # 2. Ensure 'transactions' worksheet
         try:
-            self.transactions_sheet = self.spreadsheet.worksheet("transactions")
+            self.transactions_sheet = self._retry(self.spreadsheet.worksheet, "transactions")
             # Migration check: ensure all headers are present (specifically "pending" at the end)
-            existing_headers = self.transactions_sheet.row_values(1)
+            existing_headers = self._retry(self.transactions_sheet.row_values, 1)
             if existing_headers and len(existing_headers) < len(self.transaction_headers):
-                self.transactions_sheet.update("A1:I1", [self.transaction_headers])
+                self._retry(self.transactions_sheet.update, "A1:I1", [self.transaction_headers])
         except gspread.exceptions.WorksheetNotFound:
-            self.transactions_sheet = self.spreadsheet.add_worksheet("transactions", rows="5000", cols="10")
-            self.transactions_sheet.append_row(self.transaction_headers)
+            self.transactions_sheet = self._retry(self.spreadsheet.add_worksheet, "transactions", rows="5000", cols="10")
+            self._retry(self.transactions_sheet.append_row, self.transaction_headers)
 
     def _parse_datetime(self, val):
         if not val:
@@ -296,7 +341,7 @@ class GoogleSheetsClient:
                 # Use get_all_values() instead of get_all_records() because
                 # get_all_records() silently STOPS at the first empty row,
                 # causing customers added after an empty row to be invisible.
-                all_values = self.customers_sheet.get_all_values()
+                all_values = self._retry(self.customers_sheet.get_all_values)
                 customers = []
                 if all_values:
                     headers = all_values[0]  # First row = headers
@@ -371,14 +416,15 @@ class GoogleSheetsClient:
             # Use explicit row targeting instead of append_row to avoid
             # Google Sheets API "table detection" race condition where
             # multiple rapid writes overwrite each other on the same row.
-            id_col = self.customers_sheet.col_values(1)
+            id_col = self._retry(self.customers_sheet.col_values, 1)
             # Find last row with actual data in column A
             last_data_row = 1
             for i, val in enumerate(id_col):
                 if val and str(val).strip():
                     last_data_row = i + 1
             next_row = last_data_row + 1
-            self.customers_sheet.update(
+            self._retry(
+                self.customers_sheet.update,
                 f"A{next_row}:L{next_row}",
                 [row_values],
                 value_input_option="USER_ENTERED"
@@ -412,7 +458,7 @@ class GoogleSheetsClient:
             return False
 
         with sheets_lock:
-            id_list = self.customers_sheet.col_values(1)
+            id_list = self._retry(self.customers_sheet.col_values, 1)
             
         row_idx = -1
         for idx, cid in enumerate(id_list):
@@ -449,7 +495,7 @@ class GoogleSheetsClient:
         row_values = self._object_to_customer_row(customer)
         
         with sheets_lock:
-            self.customers_sheet.update(f"A{row_idx}:L{row_idx}", [row_values])
+            self._retry(self.customers_sheet.update, f"A{row_idx}:L{row_idx}", [row_values])
             # Full cache invalidation on update: ensures fresh data on next read for both mobiles
             self._customers_cache = None
             self._transactions_cache = None
@@ -529,14 +575,14 @@ class GoogleSheetsClient:
             if cust_sheet:
                 try:
                     with sheets_lock:
-                        self.spreadsheet.del_worksheet(cust_sheet)
+                        self._retry(self.spreadsheet.del_worksheet, cust_sheet)
                     if customer_id in self._worksheet_cache:
                         del self._worksheet_cache[customer_id]
                 except Exception as e:
                     print(f"Error deleting customer worksheet: {e}")
 
         with sheets_lock:
-            id_list = self.customers_sheet.col_values(1)
+            id_list = self._retry(self.customers_sheet.col_values, 1)
             
         row_idx = -1
         for idx, cid in enumerate(id_list):
@@ -548,7 +594,7 @@ class GoogleSheetsClient:
             return False
 
         with sheets_lock:
-            self.customers_sheet.delete_rows(row_idx)
+            self._retry(self.customers_sheet.delete_rows, row_idx)
             # Full cache invalidation on delete: ensures fresh data on next read for both mobiles
             self._customers_cache = None
             self._transactions_cache = None
@@ -587,7 +633,7 @@ class GoogleSheetsClient:
             else:
                 # Use get_all_values() instead of get_all_records() — same fix
                 # as customers: avoids silent stop at empty rows.
-                all_values = self.transactions_sheet.get_all_values()
+                all_values = self._retry(self.transactions_sheet.get_all_values)
                 transactions = []
                 if all_values:
                     headers = all_values[0]
@@ -687,13 +733,14 @@ class GoogleSheetsClient:
         row_values = self._object_to_transaction_row(txn)
         with sheets_lock:
             # Use explicit row targeting (same fix as store_customer)
-            id_col = self.transactions_sheet.col_values(1)
+            id_col = self._retry(self.transactions_sheet.col_values, 1)
             last_data_row = 1
             for i, val in enumerate(id_col):
                 if val and str(val).strip():
                     last_data_row = i + 1
             next_row = last_data_row + 1
-            self.transactions_sheet.update(
+            self._retry(
+                self.transactions_sheet.update,
                 f"A{next_row}:I{next_row}",
                 [row_values],
                 value_input_option="USER_ENTERED"
@@ -729,7 +776,7 @@ class GoogleSheetsClient:
 
         # Find row index using col_values(1)
         with sheets_lock:
-            id_list = self.transactions_sheet.col_values(1)
+            id_list = self._retry(self.transactions_sheet.col_values, 1)
 
         row_idx = -1
         for idx, tid in enumerate(id_list):
@@ -758,7 +805,7 @@ class GoogleSheetsClient:
 
         row_values = self._object_to_transaction_row(txn)
         with sheets_lock:
-            self.transactions_sheet.update(f"A{row_idx}:I{row_idx}", [row_values])
+            self._retry(self.transactions_sheet.update, f"A{row_idx}:I{row_idx}", [row_values])
             # Full cache invalidation on transaction update: ensures fresh data for both mobiles
             self._customers_cache = None
             self._transactions_cache = None
@@ -792,7 +839,7 @@ class GoogleSheetsClient:
 
         # Find row index using col_values(1)
         with sheets_lock:
-            id_list = self.transactions_sheet.col_values(1)
+            id_list = self._retry(self.transactions_sheet.col_values, 1)
 
         row_idx = -1
         for idx, tid in enumerate(id_list):
@@ -808,7 +855,7 @@ class GoogleSheetsClient:
             return False
 
         with sheets_lock:
-            self.transactions_sheet.delete_rows(row_idx)
+            self._retry(self.transactions_sheet.delete_rows, row_idx)
             # Full cache invalidation on transaction delete: ensures fresh data for both mobiles
             self._customers_cache = None
             self._transactions_cache = None
@@ -826,7 +873,7 @@ class GoogleSheetsClient:
 
         # Find matching transactions rows using col_values(2) (customer_id column)
         with sheets_lock:
-            cust_ids = self.transactions_sheet.col_values(2)
+            cust_ids = self._retry(self.transactions_sheet.col_values, 2)
 
         rows_to_delete = []
         for idx, cid in enumerate(cust_ids):
@@ -840,7 +887,7 @@ class GoogleSheetsClient:
         rows_to_delete.sort(reverse=True)
         with sheets_lock:
             for r_idx in rows_to_delete:
-                self.transactions_sheet.delete_rows(r_idx)
+                self._retry(self.transactions_sheet.delete_rows, r_idx)
             # Full cache invalidation: ensures fresh data for both mobiles
             self._customers_cache = None
             self._transactions_cache = None
@@ -875,7 +922,7 @@ class GoogleSheetsClient:
 
         with sheets_lock:
             # 2. Find and delete all existing transactions for this customer
-            cust_ids = self.transactions_sheet.col_values(2)
+            cust_ids = self._retry(self.transactions_sheet.col_values, 2)
             rows_to_delete = []
             for idx, cid in enumerate(cust_ids):
                 if str(cid) == customer_id:
@@ -884,12 +931,12 @@ class GoogleSheetsClient:
             if rows_to_delete:
                 rows_to_delete.sort(reverse=True)
                 for r in rows_to_delete:
-                    self.transactions_sheet.delete_rows(r)
+                    self._retry(self.transactions_sheet.delete_rows, r)
 
             # 3. Append new transactions
             if rows_to_add:
                 # Find last row with actual data in column A
-                id_col = self.transactions_sheet.col_values(1)
+                id_col = self._retry(self.transactions_sheet.col_values, 1)
                 last_data_row = 1
                 for i, val in enumerate(id_col):
                     if val and str(val).strip():
@@ -897,7 +944,8 @@ class GoogleSheetsClient:
                 next_row = last_data_row + 1
                 end_row = next_row + len(rows_to_add) - 1
                 
-                self.transactions_sheet.update(
+                self._retry(
+                    self.transactions_sheet.update,
                     f"A{next_row}:I{end_row}",
                     rows_to_add,
                     value_input_option="USER_ENTERED"
@@ -928,14 +976,14 @@ class GoogleSheetsClient:
         # If cache miss, populate cache for all customer worksheets in bulk (only 2 API calls total)
         try:
             with sheets_lock:
-                all_sheets = self.spreadsheet.worksheets()
+                all_sheets = self._retry(self.spreadsheet.worksheets)
             
             sheet_names = [s.title for s in all_sheets if s.title not in ["customers", "transactions"]]
             
             if sheet_names:
                 ranges = [f"'{s_name}'!A1" for s_name in sheet_names]
                 with sheets_lock:
-                    results = self.spreadsheet.values_batch_get(ranges)
+                    results = self._retry(self.spreadsheet.values_batch_get, ranges)
                 value_ranges = results.get('valueRanges', [])
                 
                 # Map titles to worksheet objects
@@ -974,7 +1022,7 @@ class GoogleSheetsClient:
         
         try:
             with sheets_lock:
-                all_sheets = self.spreadsheet.worksheets()
+                all_sheets = self._retry(self.spreadsheet.worksheets)
             existing_titles = {s.title for s in all_sheets}
         except Exception as e:
             print(f"Error fetching sheets for unique title: {e}")
@@ -1000,14 +1048,14 @@ class GoogleSheetsClient:
         with sheets_lock:
             if not sheet:
                 try:
-                    sheet = self.spreadsheet.add_worksheet(new_title, rows="1000", cols="5")
+                    sheet = self._retry(self.spreadsheet.add_worksheet, new_title, rows="1000", cols="5")
                     self._worksheet_cache[customer_id] = sheet
                 except Exception as e:
                     print(f"Error creating customer worksheet {new_title}: {e}")
                     return False
             elif sheet.title != new_title:
                 try:
-                    sheet.update_title(new_title)
+                    self._retry(sheet.update_title, new_title)
                     self._worksheet_cache[customer_id] = sheet
                 except Exception as e:
                     print(f"Error updating customer worksheet title: {e}")
@@ -1061,12 +1109,12 @@ class GoogleSheetsClient:
             
         with sheets_lock:
             try:
-                sheet.clear()
-                sheet.update("A1", rows)
+                self._retry(sheet.clear)
+                self._retry(sheet.update, "A1", rows)
                 
                 # Batch all format calls into a single API request to reduce rate limit hits
                 try:
-                    sheet.spreadsheet.batch_update({
+                    self._retry(sheet.spreadsheet.batch_update, {
                         "requests": [
                             {
                                 "repeatCell": {
