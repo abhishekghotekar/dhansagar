@@ -16,8 +16,6 @@ app = FastAPI(title="Customer Vector API", version="1.0")
 
 # include routes
 app.include_router(router)
-from app.routes.monthly_routes import router as monthly_router
-app.include_router(monthly_router)
 
 @app.get("/")
 async def root():

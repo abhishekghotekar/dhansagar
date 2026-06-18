@@ -36,10 +36,14 @@ class CustomerObj:
         for t in self.transactions:
             formatted_txns.append({
                 "id": str(t.id),
+                "customer_id": t.customer_id,
                 "date": t.date.isoformat() if isinstance(t.date, datetime) else t.date,
                 "jar": t.jar_count,
                 "paid": t.amount,
-                "pending": t.pending
+                "pending": t.pending,
+                "description": t.description or "",
+                "created_at": t.created_at.isoformat() if isinstance(t.created_at, datetime) else (t.created_at or ""),
+                "updated_at": t.updated_at.isoformat() if isinstance(t.updated_at, datetime) else (t.updated_at or "")
             })
         return {
             "id": self.id,
@@ -106,7 +110,11 @@ class GoogleSheetsClient:
         self._worksheet_cache = {}        # maps customer_id -> Worksheet object
         self._customers_cache = None      # (timestamp, list of CustomerObj)
         self._transactions_cache = None   # (timestamp, list of TransactionObj)
-        self._cache_duration = 2.0       # Cache data for 2 seconds to reduce API 429 rate limit hits
+        # Cache TTL = 30 seconds:
+        # - Prevents 429 rate limit errors (much fewer API calls per minute)
+        # - Both mobiles hit same server cache → same data
+        # - Every write (add/update/delete) fully invalidates cache → next read is always fresh
+        self._cache_duration = 30.0
 
     def initialize(self):
         if self.initialized:
@@ -375,12 +383,9 @@ class GoogleSheetsClient:
                 [row_values],
                 value_input_option="USER_ENTERED"
             )
-            # Update cache in-place if it exists
-            if self._customers_cache is not None:
-                timestamp, cached_customers = self._customers_cache
-                if not any(c.id == customer.id for c in cached_customers):
-                    cached_customers.append(customer)
-                self._customers_cache = (timestamp, cached_customers)
+            # Full cache invalidation: ensures both mobiles get fresh data on next read
+            self._customers_cache = None
+            self._transactions_cache = None
 
         # Create initial transaction log if jar count or paid is recorded
         if customer.jar or customer.paid:
@@ -445,14 +450,9 @@ class GoogleSheetsClient:
         
         with sheets_lock:
             self.customers_sheet.update(f"A{row_idx}:L{row_idx}", [row_values])
-            # Update cache in-place if it exists
-            if self._customers_cache is not None:
-                timestamp, cached_customers = self._customers_cache
-                for idx, c in enumerate(cached_customers):
-                    if c.id == customer.id:
-                        cached_customers[idx] = customer
-                        break
-                self._customers_cache = (timestamp, cached_customers)
+            # Full cache invalidation on update: ensures fresh data on next read for both mobiles
+            self._customers_cache = None
+            self._transactions_cache = None
 
         # If transactions list is provided, synchronize it directly.
         # Otherwise, generate transaction log if differences exist.
@@ -549,10 +549,9 @@ class GoogleSheetsClient:
 
         with sheets_lock:
             self.customers_sheet.delete_rows(row_idx)
-            # Update cache in-place if it exists
-            if self._customers_cache is not None:
-                timestamp, cached_customers = self._customers_cache
-                self._customers_cache = (timestamp, [c for c in cached_customers if c.id != customer_id])
+            # Full cache invalidation on delete: ensures fresh data on next read for both mobiles
+            self._customers_cache = None
+            self._transactions_cache = None
 
         # Cascading delete transactions (Run in background thread to avoid blocking request thread)
         threading.Thread(target=self.delete_transactions_by_customer, args=(customer_id,), daemon=True).start()
@@ -699,12 +698,9 @@ class GoogleSheetsClient:
                 [row_values],
                 value_input_option="USER_ENTERED"
             )
-            # Update cache in-place if it exists
-            if self._transactions_cache is not None:
-                timestamp, cached_txns = self._transactions_cache
-                if not any(t.id == txn.id for t in cached_txns):
-                    cached_txns.append(txn)
-                self._transactions_cache = (timestamp, cached_txns)
+            # Full cache invalidation on new transaction: ensures fresh data for both mobiles
+            self._customers_cache = None
+            self._transactions_cache = None
 
         # Sync customer's sheet in background thread
         threading.Thread(target=self.sync_customer_sheet, args=(customer_id,), daemon=True).start()
@@ -763,19 +759,9 @@ class GoogleSheetsClient:
         row_values = self._object_to_transaction_row(txn)
         with sheets_lock:
             self.transactions_sheet.update(f"A{row_idx}:I{row_idx}", [row_values])
-            
-            # Update cache in-place
-            if self._transactions_cache is not None:
-                timestamp, cached_txns = self._transactions_cache
-                for idx, t in enumerate(cached_txns):
-                    try:
-                        curr_id = int(t.id)
-                    except:
-                        curr_id = t.id
-                    if curr_id == txn_id:
-                        cached_txns[idx] = txn
-                        break
-                self._transactions_cache = (timestamp, cached_txns)
+            # Full cache invalidation on transaction update: ensures fresh data for both mobiles
+            self._customers_cache = None
+            self._transactions_cache = None
 
         # Sync customer's sheet
         self.sync_customer_sheet(txn.customer_id)
@@ -823,10 +809,9 @@ class GoogleSheetsClient:
 
         with sheets_lock:
             self.transactions_sheet.delete_rows(row_idx)
-            # Update cache in-place
-            if self._transactions_cache is not None:
-                timestamp, cached_txns = self._transactions_cache
-                self._transactions_cache = (timestamp, [t for t in cached_txns if t.id != txn_id])
+            # Full cache invalidation on transaction delete: ensures fresh data for both mobiles
+            self._customers_cache = None
+            self._transactions_cache = None
 
         # Sync customer's sheet
         if customer_id:
@@ -856,10 +841,9 @@ class GoogleSheetsClient:
         with sheets_lock:
             for r_idx in rows_to_delete:
                 self.transactions_sheet.delete_rows(r_idx)
-            # Update cache in-place
-            if self._transactions_cache is not None:
-                timestamp, cached_txns = self._transactions_cache
-                self._transactions_cache = (timestamp, [t for t in cached_txns if t.customer_id != customer_id])
+            # Full cache invalidation: ensures fresh data for both mobiles
+            self._customers_cache = None
+            self._transactions_cache = None
 
         return True
 

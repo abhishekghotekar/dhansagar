@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.db.postgres import get_db
+from app.db.sheets import sheets_client
 from app.schemas.transaction_schema import TransactionCreate, TransactionUpdate
 from datetime import datetime
 
@@ -26,6 +27,28 @@ router = APIRouter(prefix="/monthly", tags=["Monthly Credit"])
 def get_monthly_customers_route(force_refresh: bool = False, db = Depends(get_db)):
     customers = get_monthly_customers(db, force_refresh=force_refresh)
     return [c.dict() for c in customers]
+
+# 🔄 Monthly Refresh: Cache invalidate karo aani fresh data ghya
+@router.post("/refresh")
+def refresh_monthly_data(db = Depends(get_db)):
+    """
+    Monthly customers aani transactions cache clear karto aani
+    Google Sheets madhun latest data fetch karto.
+    """
+    try:
+        # 1. Cache invalidate karo
+        sheets_client._invalidate_customers_cache()
+        sheets_client._invalidate_transactions_cache()
+
+        # 2. Force refresh - fresh data fetch karo
+        customers = get_monthly_customers(db, force_refresh=True)
+
+        return {
+            "message": "Monthly data successfully refreshed from Google Sheets",
+            "monthly_customers": len(customers)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Monthly refresh failed: {str(e)}")
 
 # 2. Get Transactions for a Customer
 @router.get("/transactions/{customer_id}")
@@ -116,6 +139,31 @@ def toggle_monthly_status(customer_id: str, is_monthly: bool, db = Depends(get_d
     if not success:
          raise HTTPException(status_code=404, detail="Customer not found")
     return {"message": f"Customer monthly status set to {is_monthly}"}
+
+# 7. Delete Monthly Customer (with all their transactions)
+@router.delete("/customer/{customer_id}")
+def delete_monthly_customer(customer_id: str, db = Depends(get_db)):
+    """
+    Monthly customer aani tyache sagle transactions delete karto.
+    """
+    try:
+        customer = get_customer_by_id(customer_id, db)
+        if not customer:
+            raise HTTPException(status_code=404, detail="Monthly customer not found")
+        if not customer.is_monthly:
+            raise HTTPException(status_code=400, detail="Customer is not a monthly customer")
+
+        success = sheets_client.delete_customer(customer_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete customer")
+
+        return {
+            "message": f"Monthly customer '{customer.customer_name}' and all their records deleted successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting customer: {str(e)}")
 
 # 7. Download Monthly Customer PDF
 @router.get("/download-pdf")
