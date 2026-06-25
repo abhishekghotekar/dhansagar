@@ -15,6 +15,60 @@ from app.core.config import (
 # Lock for sheet operations to prevent race conditions during updates
 sheets_lock = threading.Lock()
 
+def calculate_new_balance(current_balance: float, jar_count: int, amount: float, is_monthly: bool) -> tuple[float, float]:
+    """
+    Calculates the new outstanding balance and the excess amount.
+    Returns: (remaining_balance, excess_amount)
+    """
+    current_balance = float(current_balance)
+    jar_count = int(jar_count)
+    amount = float(amount)
+    excess_amount = 0.0
+
+    if is_monthly:
+        if jar_count > 0:
+            # Delivery: Amount is treated as cost (debit)
+            cost = abs(amount)
+            remaining_balance = current_balance + cost
+        else:
+            if amount > 0:
+                # Payment (credit)
+                if amount > current_balance:
+                    excess_amount = amount - current_balance
+                    remaining_balance = 0.0
+                else:
+                    remaining_balance = current_balance - amount
+            else:
+                # Cost adjustment
+                cost = abs(amount)
+                remaining_balance = current_balance + cost
+    else:
+        if jar_count > 0:
+            # Delivery: Cost is jar_count * 30.0, paid immediately is amount
+            cost = jar_count * 30.0
+            payment = amount
+            total_liability = current_balance + cost
+            if payment > total_liability:
+                excess_amount = payment - total_liability
+                remaining_balance = 0.0
+            else:
+                remaining_balance = total_liability - payment
+        else:
+            if amount > 0:
+                # Payment
+                if amount > current_balance:
+                    excess_amount = amount - current_balance
+                    remaining_balance = 0.0
+                else:
+                    remaining_balance = current_balance - amount
+            else:
+                # Cost adjustment
+                cost = abs(amount)
+                remaining_balance = current_balance + cost
+
+    remaining_balance = max(0.0, remaining_balance)
+    return remaining_balance, excess_amount
+
 class CustomerObj:
     def __init__(self, **kwargs):
         self.id = kwargs.get("id", "")
@@ -444,7 +498,7 @@ class GoogleSheetsClient:
                 "description": "Initial Record"
             },), daemon=True).start()
         else:
-            threading.Thread(target=self.sync_customer_sheet, args=(doc_id,), daemon=True).start()
+            threading.Thread(target=self.recalculate_customer_balances, args=(doc_id,), daemon=True).start()
 
         return doc_id
 
@@ -749,8 +803,8 @@ class GoogleSheetsClient:
             self._customers_cache = None
             self._transactions_cache = None
 
-        # Sync customer's sheet in background thread
-        threading.Thread(target=self.sync_customer_sheet, args=(customer_id,), daemon=True).start()
+        # Recalculate customer balances and sync customer's sheet in background thread
+        threading.Thread(target=self.recalculate_customer_balances, args=(customer_id,), daemon=True).start()
 
         return txn
 
@@ -810,8 +864,8 @@ class GoogleSheetsClient:
             self._customers_cache = None
             self._transactions_cache = None
 
-        # Sync customer's sheet
-        self.sync_customer_sheet(txn.customer_id)
+        # Recalculate customer balances and sync customer's sheet
+        self.recalculate_customer_balances(txn.customer_id)
 
         return txn
 
@@ -860,9 +914,9 @@ class GoogleSheetsClient:
             self._customers_cache = None
             self._transactions_cache = None
 
-        # Sync customer's sheet
+        # Recalculate customer balances and sync customer's sheet
         if customer_id:
-            self.sync_customer_sheet(customer_id)
+            self.recalculate_customer_balances(customer_id)
 
         return True
 
@@ -954,8 +1008,8 @@ class GoogleSheetsClient:
         # 4. Invalidate cache so they are reloaded
         self._invalidate_transactions_cache()
         
-        # 5. Sync the customer worksheet (ledger sheet) for this customer
-        self.sync_customer_sheet(customer_id)
+        # 5. Recalculate customer balances and sync customer worksheet (ledger sheet)
+        self.recalculate_customer_balances(customer_id)
         return True
 
     def _find_customer_worksheet_by_id(self, customer_id: str, name: str):
@@ -1032,6 +1086,79 @@ class GoogleSheetsClient:
             counter += 1
             title = f"{sanitized_name} ({counter})"
         return title
+
+    def recalculate_customer_balances(self, customer_id: str):
+        """
+        Recalculates the running outstanding balances for all transactions of a customer
+        chronologically, updates the transaction records in 'transactions' sheet, and
+        stores the final outstanding balance in the 'customers' sheet.
+        """
+        self.initialize()
+        if not self.initialized:
+            return
+
+        customer = self.get_customer(customer_id)
+        if not customer:
+            return
+
+        txns = self.get_transactions_by_customer(customer_id, force_refresh=True)
+        txns.sort(key=lambda x: x.date or datetime.min)
+
+        running_balance = 0.0
+        now = datetime.now()
+
+        with sheets_lock:
+            id_list = self._retry(self.transactions_sheet.col_values, 1)
+
+        id_to_row = {}
+        for idx, tid in enumerate(id_list):
+            if tid:
+                id_to_row[str(tid)] = idx + 1
+
+        for t in txns:
+            jar_count = int(t.jar_count)
+            amount = float(t.amount)
+
+            running_balance, excess = calculate_new_balance(
+                running_balance, jar_count, amount, customer.is_monthly
+            )
+
+            if excess > 0.0:
+                # Append excess info safely
+                base_desc = t.description or "Payment received"
+                if "Excess:" not in base_desc:
+                    t.description = f"{base_desc} (Excess: ₹{excess:.2f})"
+
+            t.pending = running_balance
+            t.updated_at = now
+
+            row_idx = id_to_row.get(str(t.id))
+            if row_idx:
+                row_values = self._object_to_transaction_row(t)
+                with sheets_lock:
+                    self._retry(self.transactions_sheet.update, f"A{row_idx}:I{row_idx}", [row_values])
+
+        customer.pending = running_balance
+        customer.updated_at = now
+
+        with sheets_lock:
+            cust_id_list = self._retry(self.customers_sheet.col_values, 1)
+        
+        cust_row_idx = -1
+        for idx, cid in enumerate(cust_id_list):
+            if str(cid) == customer_id:
+                cust_row_idx = idx + 1
+                break
+
+        if cust_row_idx != -1:
+            cust_row_values = self._object_to_customer_row(customer)
+            with sheets_lock:
+                self._retry(self.customers_sheet.update, f"A{cust_row_idx}:L{cust_row_idx}", [cust_row_values])
+
+        self._customers_cache = None
+        self._transactions_cache = None
+
+        self.sync_customer_sheet(customer_id)
 
     def sync_customer_sheet(self, customer_id: str):
         self.initialize()
