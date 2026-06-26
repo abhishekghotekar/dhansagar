@@ -499,18 +499,18 @@ class GoogleSheetsClient:
             self._customers_cache = None
             self._transactions_cache = None
 
-        # Create initial transaction log if jar count or paid is recorded
-        if customer.jar or customer.paid:
-            threading.Thread(target=self.add_transaction, args=({
+        # Create initial transaction log if jar count, paid, or pending is recorded
+        if customer.jar or customer.paid or customer.pending:
+            self.add_transaction({
                 "customer_id": doc_id,
                 "date": parsed_date,
                 "jar_count": customer.jar,
                 "amount": customer.paid,
                 "pending": customer.pending,
                 "description": "Initial Record"
-            },), daemon=True).start()
+            })
         else:
-            threading.Thread(target=self.recalculate_customer_balances, args=(doc_id,), daemon=True).start()
+            self.recalculate_customer_balances(doc_id)
 
         return doc_id
 
@@ -600,13 +600,9 @@ class GoogleSheetsClient:
             incoming_simplified.sort(key=lambda x: (x["id"], x["date"]))
             
             if existing_simplified != incoming_simplified:
-                threading.Thread(
-                    target=self.sync_customer_transactions,
-                    args=(customer_id, data["transactions"]),
-                    daemon=True
-                ).start()
+                self.sync_customer_transactions(customer_id, data["transactions"])
             else:
-                threading.Thread(target=self.sync_customer_sheet, args=(customer_id,), daemon=True).start()
+                self.sync_customer_sheet(customer_id)
         else:
             jar_diff = customer.jar - old_jar
             paid_diff = customer.paid - old_paid
@@ -617,16 +613,16 @@ class GoogleSheetsClient:
                 if paid_diff > 0: description = f"Paid {paid_diff}"
                 if jar_diff > 0 and paid_diff > 0: description = f"Added {jar_diff} jars & Paid {paid_diff}"
 
-                threading.Thread(target=self.add_transaction, args=({
+                self.add_transaction({
                     "customer_id": customer_id,
                     "date": customer.date or now,
                     "jar_count": jar_diff,
                     "amount": paid_diff,
                     "pending": customer.pending,
                     "description": description
-                },), daemon=True).start()
+                })
             else:
-                threading.Thread(target=self.sync_customer_sheet, args=(customer_id,), daemon=True).start()
+                self.sync_customer_sheet(customer_id)
 
         return True
 
@@ -666,8 +662,8 @@ class GoogleSheetsClient:
             self._customers_cache = None
             self._transactions_cache = None
 
-        # Cascading delete transactions (Run in background thread to avoid blocking request thread)
-        threading.Thread(target=self.delete_transactions_by_customer, args=(customer_id,), daemon=True).start()
+        # Cascading delete transactions synchronously
+        self.delete_transactions_by_customer(customer_id)
         return True
 
     def search_customers(self, query_str: str):
@@ -816,9 +812,8 @@ class GoogleSheetsClient:
             self._customers_cache = None
             self._transactions_cache = None
 
-        # Recalculate customer balances and sync customer's sheet in background thread
-        threading.Thread(target=self.recalculate_customer_balances, args=(customer_id,), daemon=True).start()
-
+        # Recalculate customer balances and sync customer's sheet synchronously
+        self.recalculate_customer_balances(customer_id)
         return txn
 
     def update_transaction(self, txn_id: int, data: dict):
@@ -1131,7 +1126,29 @@ class GoogleSheetsClient:
         total_jars = 0
         total_paid = 0.0
 
+        is_first = True
         for t in txns:
+            if is_first and t.description == "Initial Record":
+                running_balance = float(t.pending)
+                is_first = False
+                # Accumulate totals
+                total_jars += int(t.jar_count)
+                if customer.is_monthly:
+                    if int(t.jar_count) == 0 and float(t.amount) > 0:
+                        total_paid += float(t.amount)
+                else:
+                    if float(t.amount) > 0:
+                        total_paid += float(t.amount)
+                
+                t.updated_at = now
+                row_idx = id_to_row.get(str(t.id))
+                if row_idx:
+                    row_values = self._object_to_transaction_row(t)
+                    with sheets_lock:
+                        self._retry(self.transactions_sheet.update, f"A{row_idx}:I{row_idx}", [row_values])
+                continue
+
+            is_first = False
             jar_count = int(t.jar_count)
             amount = float(t.amount)
 
