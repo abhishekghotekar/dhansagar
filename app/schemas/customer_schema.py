@@ -19,6 +19,7 @@ class Customer(BaseModel):
     success: bool = False
     date: str | None = None
     is_monthly: bool = False
+    rate: float = 25.0
     transactions: Optional[List[TransactionSchema]] = None
 
     class Config:
@@ -34,5 +35,6 @@ class CustomerUpdate(BaseModel):
     success: bool | None = None
     date: str | None = None
     is_monthly: bool | None = None
+    rate: float | None = None
     transactions: Optional[List[TransactionSchema]] = None
 

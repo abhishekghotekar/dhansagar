@@ -15,7 +15,7 @@ from app.core.config import (
 # Lock for sheet operations to prevent race conditions during updates
 sheets_lock = threading.Lock()
 
-def calculate_new_balance(current_balance: float, jar_count: int, amount: float, is_monthly: bool) -> tuple[float, float]:
+def calculate_new_balance(current_balance: float, jar_count: int, amount: float, is_monthly: bool, rate: float = 25.0) -> tuple[float, float]:
     """
     Calculates the new outstanding balance and the excess amount.
     Returns: (remaining_balance, excess_amount)
@@ -25,22 +25,49 @@ def calculate_new_balance(current_balance: float, jar_count: int, amount: float,
     amount = float(amount)
     excess_amount = 0.0
 
-    if jar_count > 0:
-        # Delivery: Amount is treated as cost (debit)
-        cost = abs(amount)
-        remaining_balance = current_balance + cost
-    else:
-        if amount > 0:
-            # Payment (credit)
-            if amount > current_balance:
-                excess_amount = amount - current_balance
-                remaining_balance = 0.0
-            else:
-                remaining_balance = current_balance - amount
-        else:
-            # Cost adjustment
+    if is_monthly:
+        if jar_count > 0:
+            # Delivery: Amount is treated as cost (debit)
             cost = abs(amount)
             remaining_balance = current_balance + cost
+        else:
+            if amount > 0:
+                # Payment (credit)
+                if amount > current_balance:
+                    excess_amount = amount - current_balance
+                    remaining_balance = 0.0
+                else:
+                    remaining_balance = current_balance - amount
+            else:
+                # Cost adjustment
+                cost = abs(amount)
+                remaining_balance = current_balance + cost
+    else:
+        # Standard customer (pay-per-can)
+        if jar_count > 0:
+            # Jar delivery: Baki = prev_baki + (jars × rate) − payment
+            cost = jar_count * rate
+            if amount > 0:
+                cost_minus_payment = cost - amount
+                if current_balance + cost_minus_payment < 0:
+                    excess_amount = abs(current_balance + cost_minus_payment)
+                    remaining_balance = 0.0
+                else:
+                    remaining_balance = current_balance + cost_minus_payment
+            else:
+                remaining_balance = current_balance + cost
+        else:
+            # Payment-only entry (jar_count == 0)
+            if amount > 0:
+                if amount > current_balance:
+                    excess_amount = amount - current_balance
+                    remaining_balance = 0.0
+                else:
+                    remaining_balance = current_balance - amount
+            else:
+                # Cost adjustment
+                cost = abs(amount)
+                remaining_balance = current_balance + cost
 
     remaining_balance = max(0.0, remaining_balance)
     return remaining_balance, excess_amount
@@ -59,6 +86,7 @@ class CustomerObj:
         self.is_monthly = kwargs.get("is_monthly", False)
         self.created_at = kwargs.get("created_at")
         self.updated_at = kwargs.get("updated_at")
+        self.rate = float(kwargs.get("rate", 30.0))
         self.transactions = []
 
     def dict(self):
@@ -88,6 +116,7 @@ class CustomerObj:
             "is_monthly": self.is_monthly,
             "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
             "updated_at": self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at,
+            "rate": self.rate,
             "transactions": formatted_txns
         }
 
@@ -134,7 +163,7 @@ class GoogleSheetsClient:
         self.customer_headers = [
             "id", "customer_name", "customer_address", "customer_number", 
             "jar", "paid", "pending", "success", "date", "is_monthly", 
-            "created_at", "updated_at"
+            "created_at", "updated_at", "rate"
         ]
         self.transaction_headers = [
             "id", "customer_id", "date", "jar_count", "amount", 
@@ -284,6 +313,11 @@ class GoogleSheetsClient:
         except:
             pending = 0.0
 
+        try:
+            rate = float(row_dict.get("rate", 30.0))
+        except:
+            rate = 30.0
+
         success = str(row_dict.get("success", "")).lower() == "true"
         is_monthly = str(row_dict.get("is_monthly", "")).lower() == "true"
 
@@ -299,7 +333,8 @@ class GoogleSheetsClient:
             date=self._parse_datetime(row_dict.get("date")),
             is_monthly=is_monthly,
             created_at=self._parse_datetime(row_dict.get("created_at")),
-            updated_at=self._parse_datetime(row_dict.get("updated_at"))
+            updated_at=self._parse_datetime(row_dict.get("updated_at")),
+            rate=rate
         )
 
     def _row_to_transaction(self, row_dict):
@@ -438,7 +473,8 @@ class GoogleSheetsClient:
             date=parsed_date,
             is_monthly=data.get("is_monthly", False),
             created_at=now,
-            updated_at=now
+            updated_at=now,
+            rate=float(data.get("rate", 30.0))
         )
 
         row_values = self._object_to_customer_row(customer)
@@ -455,7 +491,7 @@ class GoogleSheetsClient:
             next_row = last_data_row + 1
             self._retry(
                 self.customers_sheet.update,
-                f"A{next_row}:L{next_row}",
+                f"A{next_row}:M{next_row}",
                 [row_values],
                 value_input_option="USER_ENTERED"
             )
@@ -513,6 +549,7 @@ class GoogleSheetsClient:
         if "pending" in data: customer.pending = float(data["pending"])
         if "success" in data: customer.success = str(data["success"]).lower() == "true"
         if "is_monthly" in data: customer.is_monthly = str(data["is_monthly"]).lower() == "true"
+        if "rate" in data: customer.rate = float(data["rate"])
         
         if "date" in data and data["date"]:
             if isinstance(data["date"], datetime):
@@ -525,7 +562,7 @@ class GoogleSheetsClient:
         row_values = self._object_to_customer_row(customer)
         
         with sheets_lock:
-            self._retry(self.customers_sheet.update, f"A{row_idx}:L{row_idx}", [row_values])
+            self._retry(self.customers_sheet.update, f"A{row_idx}:M{row_idx}", [row_values])
             # Full cache invalidation on update: ensures fresh data on next read for both mobiles
             self._customers_cache = None
             self._transactions_cache = None
@@ -1099,7 +1136,7 @@ class GoogleSheetsClient:
             amount = float(t.amount)
 
             running_balance, excess = calculate_new_balance(
-                running_balance, jar_count, amount, customer.is_monthly
+                running_balance, jar_count, amount, customer.is_monthly, customer.rate
             )
 
             if excess > 0.0:
@@ -1113,8 +1150,12 @@ class GoogleSheetsClient:
 
             # Accumulate totals
             total_jars += jar_count
-            if jar_count == 0 and amount > 0:
-                total_paid += amount
+            if customer.is_monthly:
+                if jar_count == 0 and amount > 0:
+                    total_paid += amount
+            else:
+                if amount > 0:
+                    total_paid += amount
 
             row_idx = id_to_row.get(str(t.id))
             if row_idx:
@@ -1139,7 +1180,7 @@ class GoogleSheetsClient:
         if cust_row_idx != -1:
             cust_row_values = self._object_to_customer_row(customer)
             with sheets_lock:
-                self._retry(self.customers_sheet.update, f"A{cust_row_idx}:L{cust_row_idx}", [cust_row_values])
+                self._retry(self.customers_sheet.update, f"A{cust_row_idx}:M{cust_row_idx}", [cust_row_values])
 
         self._customers_cache = None
         self._transactions_cache = None

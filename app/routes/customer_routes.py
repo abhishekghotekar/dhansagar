@@ -55,15 +55,14 @@ def search(q: str, db = Depends(get_db)):
     return results
 
 
-# 📄 Get all customers — Monthly customers excluded (use /monthly/customers for those)
+# 📄 Get all customers — Monthly customers included!
 @router.get("/all-customers")
 def get_all(force_refresh: bool = False, db = Depends(get_db)):
-    # Always exclude_monthly=True — monthly customers are in /monthly/customers
-    data = get_all_customers(db, exclude_monthly=True, force_refresh=force_refresh)
+    data = get_all_customers(db, exclude_monthly=False, force_refresh=force_refresh)
     return [c.dict() for c in data]
 
 
-# 👤 Get single customer detail — Monthly customers excluded
+# 👤 Get single customer detail — all customers included
 @router.get("/customer/{customer_id}")
 def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depends(get_db)):
     try:
@@ -72,7 +71,7 @@ def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depe
             sheets_client._invalidate_transactions_cache()
 
         customer = sheets_client.get_customer(customer_id)
-        if not customer or customer.is_monthly:
+        if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
         # Transactions sort karo by date (latest first)
@@ -83,8 +82,12 @@ def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depe
         )
 
         total_jars = sum(t.jar_count for t in txns)
-        total_paid = sum(t.amount for t in txns if t.amount > 0 and t.jar_count == 0)
-        total_cost = sum(abs(t.amount) for t in txns if t.jar_count > 0 or (t.jar_count == 0 and t.amount < 0))
+        if customer.is_monthly:
+            total_paid = sum(t.amount for t in txns if t.amount > 0 and t.jar_count == 0)
+            total_cost = sum(abs(t.amount) for t in txns if t.jar_count > 0 or (t.jar_count == 0 and t.amount < 0))
+        else:
+            total_paid = sum(t.amount for t in txns if t.amount > 0)
+            total_cost = sum(t.jar_count * customer.rate for t in txns if t.jar_count > 0) + sum(abs(t.amount) for t in txns if t.jar_count == 0 and t.amount < 0)
 
         delivery_records = []
         for t in txns:
@@ -224,8 +227,12 @@ def get_customer_records_by_date(
 
         # --- Running totals ---
         total_jars   = sum(t.jar_count for t in txns)
-        total_paid   = sum(t.amount for t in txns if t.amount > 0 and t.jar_count == 0)
-        total_cost   = sum(abs(t.amount) for t in txns if t.jar_count > 0 or (t.jar_count == 0 and t.amount < 0))
+        if customer.is_monthly:
+            total_paid   = sum(t.amount for t in txns if t.amount > 0 and t.jar_count == 0)
+            total_cost   = sum(abs(t.amount) for t in txns if t.jar_count > 0 or (t.jar_count == 0 and t.amount < 0))
+        else:
+            total_paid   = sum(t.amount for t in txns if t.amount > 0)
+            total_cost   = sum(t.jar_count * customer.rate for t in txns if t.jar_count > 0) + sum(abs(t.amount) for t in txns if t.jar_count == 0 and t.amount < 0)
 
         return {
             "customer_id": customer_id,
@@ -259,12 +266,12 @@ def get_customer_records_by_date(
 
 
 
-# 📥 Download PDF
+# 📥 Download PDF — all customers included!
 @router.get("/download-pdf")
 def download_pdf(db = Depends(get_db)):
     try:
         # 1. Fetch data
-        customers = get_all_customers(db, exclude_monthly=True)
+        customers = get_all_customers(db, exclude_monthly=False)
         
         # 2. Create Buffer
         buffer = io.BytesIO()
