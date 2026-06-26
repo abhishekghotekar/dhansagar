@@ -25,46 +25,22 @@ def calculate_new_balance(current_balance: float, jar_count: int, amount: float,
     amount = float(amount)
     excess_amount = 0.0
 
-    if is_monthly:
-        if jar_count > 0:
-            # Delivery: Amount is treated as cost (debit)
-            cost = abs(amount)
-            remaining_balance = current_balance + cost
-        else:
-            if amount > 0:
-                # Payment (credit)
-                if amount > current_balance:
-                    excess_amount = amount - current_balance
-                    remaining_balance = 0.0
-                else:
-                    remaining_balance = current_balance - amount
-            else:
-                # Cost adjustment
-                cost = abs(amount)
-                remaining_balance = current_balance + cost
+    if jar_count > 0:
+        # Delivery: Amount is treated as cost (debit)
+        cost = abs(amount)
+        remaining_balance = current_balance + cost
     else:
-        if jar_count > 0:
-            # Delivery: Cost is jar_count * 30.0, paid immediately is amount
-            cost = jar_count * 30.0
-            payment = amount
-            total_liability = current_balance + cost
-            if payment > total_liability:
-                excess_amount = payment - total_liability
+        if amount > 0:
+            # Payment (credit)
+            if amount > current_balance:
+                excess_amount = amount - current_balance
                 remaining_balance = 0.0
             else:
-                remaining_balance = total_liability - payment
+                remaining_balance = current_balance - amount
         else:
-            if amount > 0:
-                # Payment
-                if amount > current_balance:
-                    excess_amount = amount - current_balance
-                    remaining_balance = 0.0
-                else:
-                    remaining_balance = current_balance - amount
-            else:
-                # Cost adjustment
-                cost = abs(amount)
-                remaining_balance = current_balance + cost
+            # Cost adjustment
+            cost = abs(amount)
+            remaining_balance = current_balance + cost
 
     remaining_balance = max(0.0, remaining_balance)
     return remaining_balance, excess_amount
@@ -1115,6 +1091,9 @@ class GoogleSheetsClient:
             if tid:
                 id_to_row[str(tid)] = idx + 1
 
+        total_jars = 0
+        total_paid = 0.0
+
         for t in txns:
             jar_count = int(t.jar_count)
             amount = float(t.amount)
@@ -1132,12 +1111,19 @@ class GoogleSheetsClient:
             t.pending = running_balance
             t.updated_at = now
 
+            # Accumulate totals
+            total_jars += jar_count
+            if jar_count == 0 and amount > 0:
+                total_paid += amount
+
             row_idx = id_to_row.get(str(t.id))
             if row_idx:
                 row_values = self._object_to_transaction_row(t)
                 with sheets_lock:
                     self._retry(self.transactions_sheet.update, f"A{row_idx}:I{row_idx}", [row_values])
 
+        customer.jar = total_jars
+        customer.paid = total_paid
         customer.pending = running_balance
         customer.updated_at = now
 

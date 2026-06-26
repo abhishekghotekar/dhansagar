@@ -84,7 +84,7 @@ def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depe
 
         total_jars = sum(t.jar_count for t in txns)
         total_paid = sum(t.amount for t in txns if t.amount > 0 and t.jar_count == 0)
-        total_cost = sum(abs(t.amount) for t in txns if t.jar_count > 0)
+        total_cost = sum(abs(t.amount) for t in txns if t.jar_count > 0 or (t.jar_count == 0 and t.amount < 0))
 
         delivery_records = []
         for t in txns:
@@ -225,7 +225,7 @@ def get_customer_records_by_date(
         # --- Running totals ---
         total_jars   = sum(t.jar_count for t in txns)
         total_paid   = sum(t.amount for t in txns if t.amount > 0 and t.jar_count == 0)
-        total_cost   = sum(abs(t.amount) for t in txns if t.jar_count > 0)
+        total_cost   = sum(abs(t.amount) for t in txns if t.jar_count > 0 or (t.jar_count == 0 and t.amount < 0))
 
         return {
             "customer_id": customer_id,
