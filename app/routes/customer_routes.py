@@ -74,20 +74,23 @@ def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depe
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        # Transactions sort karo by date (latest first)
+        # Sort stably by date and ID (latest first)
+        def safe_sort_key(t):
+            try:
+                tid = int(t.id)
+            except:
+                tid = 0
+            return (t.date if t.date else datetime.min, tid)
         txns = sorted(
             customer.transactions,
-            key=lambda t: t.date if t.date else datetime.min,
+            key=safe_sort_key,
             reverse=True
         )
 
         total_jars = sum(t.jar_count for t in txns)
-        if customer.is_monthly:
-            total_paid = sum(t.amount for t in txns if t.amount > 0 and t.jar_count == 0)
-            total_cost = sum(abs(t.amount) for t in txns if t.jar_count > 0 or (t.jar_count == 0 and t.amount < 0))
-        else:
-            total_paid = sum(t.amount for t in txns if t.amount > 0)
-            total_cost = sum(t.jar_count * customer.rate for t in txns if t.jar_count > 0) + sum(abs(t.amount) for t in txns if t.jar_count == 0 and t.amount < 0)
+        total_paid = sum(t.amount for t in txns if t.amount > 0)
+        total_pending = max(0.0, sum(t.pending for t in txns) - total_paid)
+        total_cost = sum(t.pending for t in txns)
 
         delivery_records = []
         for t in txns:
@@ -207,7 +210,13 @@ def get_customer_records_by_date(
 
         # --- Date-wise sort ---
         reverse_order = (order.lower() == "desc")
-        txns.sort(key=lambda t: t.date if t.date else datetime.min, reverse=reverse_order)
+        def safe_sort_key(t):
+            try:
+                tid = int(t.id)
+            except:
+                tid = 0
+            return (t.date if t.date else datetime.min, tid)
+        txns.sort(key=safe_sort_key, reverse=reverse_order)
 
         # --- Group by date ---
         from collections import OrderedDict
@@ -227,12 +236,9 @@ def get_customer_records_by_date(
 
         # --- Running totals ---
         total_jars   = sum(t.jar_count for t in txns)
-        if customer.is_monthly:
-            total_paid   = sum(t.amount for t in txns if t.amount > 0 and t.jar_count == 0)
-            total_cost   = sum(abs(t.amount) for t in txns if t.jar_count > 0 or (t.jar_count == 0 and t.amount < 0))
-        else:
-            total_paid   = sum(t.amount for t in txns if t.amount > 0)
-            total_cost   = sum(t.jar_count * customer.rate for t in txns if t.jar_count > 0) + sum(abs(t.amount) for t in txns if t.jar_count == 0 and t.amount < 0)
+        total_paid   = sum(t.amount for t in txns if t.amount > 0)
+        total_pending = max(0.0, sum(t.pending for t in txns) - total_paid)
+        total_cost   = sum(t.pending for t in txns)
 
         return {
             "customer_id": customer_id,

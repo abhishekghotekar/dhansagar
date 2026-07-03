@@ -4,7 +4,6 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from app.routes.customer_routes import router as customer_router
-from app.routes.monthly_routes import router as monthly_router
 from app.core.config import USE_GOOGLE_SHEETS
 from app.db.sheets import sheets_client
 
@@ -28,7 +27,6 @@ app.add_middleware(
 
 # include routes
 app.include_router(customer_router)
-app.include_router(monthly_router)
 
 @app.get("/")
 async def root():

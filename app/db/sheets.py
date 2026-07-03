@@ -15,7 +15,7 @@ from app.core.config import (
 # Lock for sheet operations to prevent race conditions during updates
 sheets_lock = threading.Lock()
 
-def calculate_new_balance(current_balance: float, jar_count: int, amount: float, is_monthly: bool, rate: float = 25.0) -> tuple[float, float]:
+def calculate_new_balance(current_balance: float, jar_count: int, amount: float, is_monthly: bool = False, rate: float = 25.0) -> tuple[float, float]:
     """
     Calculates the new outstanding balance and the excess amount.
     Returns: (remaining_balance, excess_amount)
@@ -25,49 +25,34 @@ def calculate_new_balance(current_balance: float, jar_count: int, amount: float,
     amount = float(amount)
     excess_amount = 0.0
 
-    if is_monthly:
-        if jar_count > 0:
-            # Delivery: Amount is treated as cost (debit)
+    # Standard customer (pay-per-can)
+    if jar_count > 0:
+        # Jar delivery: Baki = prev_baki + (jars × rate) − payment
+        cost = jar_count * rate
+        if amount > 0:
+            cost_minus_payment = cost - amount
+            if current_balance + cost_minus_payment < 0:
+                excess_amount = abs(current_balance + cost_minus_payment)
+                remaining_balance = 0.0
+            else:
+                remaining_balance = current_balance + cost_minus_payment
+        else:
+            remaining_balance = current_balance + cost
+    else:
+        # Payment-only entry (jar_count == 0)
+        if amount > 0:
+            if amount > current_balance:
+                excess_amount = amount - current_balance
+                remaining_balance = 0.0
+            else:
+                remaining_balance = current_balance - amount
+        else:
+            # Cost adjustment
             cost = abs(amount)
             remaining_balance = current_balance + cost
-        else:
-            if amount > 0:
-                # Payment (credit)
-                if amount > current_balance:
-                    excess_amount = amount - current_balance
-                    remaining_balance = 0.0
-                else:
-                    remaining_balance = current_balance - amount
-            else:
-                # Cost adjustment
-                cost = abs(amount)
-                remaining_balance = current_balance + cost
-    else:
-        # Standard customer (pay-per-can)
-        if jar_count > 0:
-            # Jar delivery: Baki = prev_baki + (jars × rate) − payment
-            cost = jar_count * rate
-            if amount > 0:
-                cost_minus_payment = cost - amount
-                if current_balance + cost_minus_payment < 0:
-                    excess_amount = abs(current_balance + cost_minus_payment)
-                    remaining_balance = 0.0
-                else:
-                    remaining_balance = current_balance + cost_minus_payment
-            else:
-                remaining_balance = current_balance + cost
-        else:
-            # Payment-only entry (jar_count == 0)
-            if amount > 0:
-                if amount > current_balance:
-                    excess_amount = amount - current_balance
-                    remaining_balance = 0.0
-                else:
-                    remaining_balance = current_balance - amount
-            else:
-                # Cost adjustment
-                cost = abs(amount)
-                remaining_balance = current_balance + cost
+
+    remaining_balance = max(0.0, remaining_balance)
+    return remaining_balance, excess_amount
 
     remaining_balance = max(0.0, remaining_balance)
     return remaining_balance, excess_amount
@@ -87,6 +72,7 @@ class CustomerObj:
         self.created_at = kwargs.get("created_at")
         self.updated_at = kwargs.get("updated_at")
         self.rate = float(kwargs.get("rate", 30.0))
+        self.row_idx = kwargs.get("row_idx", None)
         self.transactions = []
 
     def dict(self):
@@ -133,6 +119,7 @@ class TransactionObj:
         self.description = kwargs.get("description", "")
         self.created_at = kwargs.get("created_at")
         self.updated_at = kwargs.get("updated_at")
+        self.row_idx = kwargs.get("row_idx", None)
 
     def dict(self):
         return {
@@ -174,6 +161,7 @@ class GoogleSheetsClient:
         self._worksheet_cache = {}        # maps customer_id -> Worksheet object
         self._customers_cache = None      # (timestamp, list of CustomerObj)
         self._transactions_cache = None   # (timestamp, list of TransactionObj)
+        self._worksheets_list_cache = None # (timestamp, list of Worksheet objects)
         # Cache TTL = 30 seconds:
         # - Prevents 429 rate limit errors (much fewer API calls per minute)
         # - Both mobiles hit same server cache → same data
@@ -263,6 +251,18 @@ class GoogleSheetsClient:
     def _invalidate_transactions_cache(self):
         self._transactions_cache = None
 
+    def _get_worksheets_cached(self, force_refresh=False):
+        now = time.time()
+        if not force_refresh and self._worksheets_list_cache and (now - self._worksheets_list_cache[0] < 300.0):
+            return self._worksheets_list_cache[1]
+        with sheets_lock:
+            all_sheets = self._retry(self.spreadsheet.worksheets)
+        self._worksheets_list_cache = (now, all_sheets)
+        return all_sheets
+
+    def _invalidate_worksheets_cache(self):
+        self._worksheets_list_cache = None
+
     def _ensure_worksheets(self):
         # 1. Ensure 'customers' worksheet
         try:
@@ -270,6 +270,7 @@ class GoogleSheetsClient:
         except gspread.exceptions.WorksheetNotFound:
             self.customers_sheet = self._retry(self.spreadsheet.add_worksheet, "customers", rows="1000", cols="15")
             self._retry(self.customers_sheet.append_row, self.customer_headers)
+            self._invalidate_worksheets_cache()
 
         # 2. Ensure 'transactions' worksheet
         try:
@@ -281,6 +282,7 @@ class GoogleSheetsClient:
         except gspread.exceptions.WorksheetNotFound:
             self.transactions_sheet = self._retry(self.spreadsheet.add_worksheet, "transactions", rows="5000", cols="10")
             self._retry(self.transactions_sheet.append_row, self.transaction_headers)
+            self._invalidate_worksheets_cache()
 
     def _parse_datetime(self, val):
         if not val:
@@ -410,14 +412,16 @@ class GoogleSheetsClient:
                 customers = []
                 if all_values:
                     headers = all_values[0]  # First row = headers
-                    for row in all_values[1:]:  # Skip header row
+                    for idx, row in enumerate(all_values[1:]):  # Skip header row
                         if not any(row):  # Skip fully empty rows
                             continue
                         # Pad row to header length if needed
                         padded = row + [''] * (len(headers) - len(row))
                         row_dict = dict(zip(headers, padded))
                         if row_dict.get('id'):  # Only include rows with a valid ID
-                            customers.append(self._row_to_customer(row_dict))
+                            cust = self._row_to_customer(row_dict)
+                            cust.row_idx = idx + 2
+                            customers.append(cust)
                 self._customers_cache = (now_ts, customers)
             
         # Fetch and associate transactions for each customer
@@ -523,14 +527,17 @@ class GoogleSheetsClient:
         if not customer:
             return False
 
-        with sheets_lock:
-            id_list = self._retry(self.customers_sheet.col_values, 1)
-            
-        row_idx = -1
-        for idx, cid in enumerate(id_list):
-            if str(cid) == customer_id:
-                row_idx = idx + 1
-                break
+        if hasattr(customer, 'row_idx') and customer.row_idx:
+            row_idx = customer.row_idx
+        else:
+            with sheets_lock:
+                id_list = self._retry(self.customers_sheet.col_values, 1)
+                
+            row_idx = -1
+            for idx, cid in enumerate(id_list):
+                if str(cid) == customer_id:
+                    row_idx = idx + 1
+                    break
 
         if row_idx == -1:
             return False
@@ -639,19 +646,23 @@ class GoogleSheetsClient:
                 try:
                     with sheets_lock:
                         self._retry(self.spreadsheet.del_worksheet, cust_sheet)
+                    self._invalidate_worksheets_cache()
                     if customer_id in self._worksheet_cache:
                         del self._worksheet_cache[customer_id]
                 except Exception as e:
                     print(f"Error deleting customer worksheet: {e}")
 
-        with sheets_lock:
-            id_list = self._retry(self.customers_sheet.col_values, 1)
-            
-        row_idx = -1
-        for idx, cid in enumerate(id_list):
-            if str(cid) == customer_id:
-                row_idx = idx + 1
-                break
+        if customer and hasattr(customer, 'row_idx') and customer.row_idx:
+            row_idx = customer.row_idx
+        else:
+            with sheets_lock:
+                id_list = self._retry(self.customers_sheet.col_values, 1)
+                
+            row_idx = -1
+            for idx, cid in enumerate(id_list):
+                if str(cid) == customer_id:
+                    row_idx = idx + 1
+                    break
 
         if row_idx == -1:
             return False
@@ -700,13 +711,15 @@ class GoogleSheetsClient:
                 transactions = []
                 if all_values:
                     headers = all_values[0]
-                    for row in all_values[1:]:
+                    for idx, row in enumerate(all_values[1:]):
                         if not any(row):
                             continue
                         padded = row + [''] * (len(headers) - len(row))
                         row_dict = dict(zip(headers, padded))
                         if row_dict.get('id'):  # Only include rows with a valid ID
-                            transactions.append(self._row_to_transaction(row_dict))
+                            txn = self._row_to_transaction(row_dict)
+                            txn.row_idx = idx + 2
+                            transactions.append(txn)
                 self._transactions_cache = (now_ts, transactions)
 
         return list(transactions)
@@ -714,8 +727,14 @@ class GoogleSheetsClient:
     def get_transactions_by_customer(self, customer_id: str, force_refresh=False):
         txns = self.get_all_transactions(force_refresh=force_refresh)
         filtered = [t for t in txns if t.customer_id == customer_id]
-        # Sort descending by date
-        filtered.sort(key=lambda x: x.date or datetime.min, reverse=True)
+        # Sort descending by date and ID
+        def safe_sort_key(t):
+            try:
+                tid = int(t.id)
+            except:
+                tid = 0
+            return (t.date or datetime.min, tid)
+        filtered.sort(key=safe_sort_key, reverse=True)
         return filtered
 
     def add_transaction(self, data: dict):
@@ -747,32 +766,7 @@ class GoogleSheetsClient:
         if pending_val is None:
             cust = self.get_customer(customer_id)
             if cust:
-                if cust.is_monthly:
-                    cust_txns = [t for t in txns if t.customer_id == customer_id]
-                    total_cost = 0.0
-                    total_paid = 0.0
-                    for t in cust_txns:
-                        val = t.amount
-                        if t.jar_count > 0:
-                            total_cost += abs(val)
-                        else:
-                            if val > 0:
-                                total_paid += val
-                            else:
-                                total_cost += abs(val)
-                    
-                    new_jar = int(data.get("jar_count", 0))
-                    new_amt = float(data.get("amount", 0.0))
-                    if new_jar > 0:
-                        total_cost += abs(new_amt)
-                    else:
-                        if new_amt > 0:
-                            total_paid += new_amt
-                        else:
-                            total_cost += abs(new_amt)
-                    pending_val = total_cost - total_paid
-                else:
-                    pending_val = cust.pending
+                pending_val = float(data.get("jar_count", 0)) * cust.rate - float(data.get("amount", 0))
             else:
                 pending_val = 0.0
         else:
@@ -836,19 +830,22 @@ class GoogleSheetsClient:
         if not txn:
             return None
 
-        # Find row index using col_values(1)
-        with sheets_lock:
-            id_list = self._retry(self.transactions_sheet.col_values, 1)
+        if hasattr(txn, 'row_idx') and txn.row_idx:
+            row_idx = txn.row_idx
+        else:
+            # Find row index using col_values(1)
+            with sheets_lock:
+                id_list = self._retry(self.transactions_sheet.col_values, 1)
 
-        row_idx = -1
-        for idx, tid in enumerate(id_list):
-            try:
-                curr_id = int(tid)
-            except:
-                curr_id = tid
-            if curr_id == txn_id:
-                row_idx = idx + 1
-                break
+            row_idx = -1
+            for idx, tid in enumerate(id_list):
+                try:
+                    curr_id = int(tid)
+                except:
+                    curr_id = tid
+                if curr_id == txn_id:
+                    row_idx = idx + 1
+                    break
 
         if row_idx == -1:
             return None
@@ -899,19 +896,22 @@ class GoogleSheetsClient:
 
         customer_id = txn.customer_id
 
-        # Find row index using col_values(1)
-        with sheets_lock:
-            id_list = self._retry(self.transactions_sheet.col_values, 1)
+        if hasattr(txn, 'row_idx') and txn.row_idx:
+            row_idx = txn.row_idx
+        else:
+            # Find row index using col_values(1)
+            with sheets_lock:
+                id_list = self._retry(self.transactions_sheet.col_values, 1)
 
-        row_idx = -1
-        for idx, tid in enumerate(id_list):
-            try:
-                curr_id = int(tid)
-            except:
-                curr_id = tid
-            if curr_id == txn_id:
-                row_idx = idx + 1
-                break
+            row_idx = -1
+            for idx, tid in enumerate(id_list):
+                try:
+                    curr_id = int(tid)
+                except:
+                    curr_id = tid
+                if curr_id == txn_id:
+                    row_idx = idx + 1
+                    break
 
         if row_idx == -1:
             return False
@@ -933,14 +933,16 @@ class GoogleSheetsClient:
         if not self.initialized:
             return False
 
-        # Find matching transactions rows using col_values(2) (customer_id column)
-        with sheets_lock:
-            cust_ids = self._retry(self.transactions_sheet.col_values, 2)
+        # Find matching transactions rows using cached row_idx
+        txns = self.get_all_transactions()
+        rows_to_delete = [t.row_idx for t in txns if t.customer_id == customer_id and hasattr(t, 'row_idx') and t.row_idx]
 
-        rows_to_delete = []
-        for idx, cid in enumerate(cust_ids):
-            if str(cid) == customer_id:
-                rows_to_delete.append(idx + 1)
+        if not rows_to_delete:
+            with sheets_lock:
+                cust_ids = self._retry(self.transactions_sheet.col_values, 2)
+            for idx, cid in enumerate(cust_ids):
+                if str(cid) == customer_id:
+                    rows_to_delete.append(idx + 1)
 
         if not rows_to_delete:
             return True
@@ -982,14 +984,18 @@ class GoogleSheetsClient:
             )
             rows_to_add.append(self._object_to_transaction_row(txn))
 
-        with sheets_lock:
-            # 2. Find and delete all existing transactions for this customer
-            cust_ids = self._retry(self.transactions_sheet.col_values, 2)
-            rows_to_delete = []
+        # 2. Find and delete all existing transactions for this customer
+        txns = self.get_all_transactions()
+        rows_to_delete = [t.row_idx for t in txns if t.customer_id == customer_id and hasattr(t, 'row_idx') and t.row_idx]
+
+        if not rows_to_delete:
+            with sheets_lock:
+                cust_ids = self._retry(self.transactions_sheet.col_values, 2)
             for idx, cid in enumerate(cust_ids):
                 if str(cid) == customer_id:
                     rows_to_delete.append(idx + 1)
-            
+
+        with sheets_lock:
             if rows_to_delete:
                 rows_to_delete.sort(reverse=True)
                 for r in rows_to_delete:
@@ -1037,8 +1043,7 @@ class GoogleSheetsClient:
                 
         # If cache miss, populate cache for all customer worksheets in bulk (only 2 API calls total)
         try:
-            with sheets_lock:
-                all_sheets = self._retry(self.spreadsheet.worksheets)
+            all_sheets = self._get_worksheets_cached()
             
             sheet_names = [s.title for s in all_sheets if s.title not in ["customers", "transactions"]]
             
@@ -1083,8 +1088,7 @@ class GoogleSheetsClient:
         counter = 1
         
         try:
-            with sheets_lock:
-                all_sheets = self._retry(self.spreadsheet.worksheets)
+            all_sheets = self._get_worksheets_cached()
             existing_titles = {s.title for s in all_sheets}
         except Exception as e:
             print(f"Error fetching sheets for unique title: {e}")
@@ -1097,9 +1101,7 @@ class GoogleSheetsClient:
 
     def recalculate_customer_balances(self, customer_id: str):
         """
-        Recalculates the running outstanding balances for all transactions of a customer
-        chronologically, updates the transaction records in 'transactions' sheet, and
-        stores the final outstanding balance in the 'customers' sheet.
+        Recalculates the totals and stores the final outstanding balance in the 'customers' sheet.
         """
         self.initialize()
         if not self.initialized:
@@ -1110,94 +1112,36 @@ class GoogleSheetsClient:
             return
 
         txns = self.get_transactions_by_customer(customer_id, force_refresh=True)
-        txns.sort(key=lambda x: x.date or datetime.min)
 
-        running_balance = 0.0
-        now = datetime.now()
-
-        with sheets_lock:
-            id_list = self._retry(self.transactions_sheet.col_values, 1)
-
-        id_to_row = {}
-        for idx, tid in enumerate(id_list):
-            if tid:
-                id_to_row[str(tid)] = idx + 1
-
-        total_jars = 0
-        total_paid = 0.0
-
-        is_first = True
-        for t in txns:
-            if is_first and t.description == "Initial Record":
-                running_balance = float(t.pending)
-                is_first = False
-                # Accumulate totals
-                total_jars += int(t.jar_count)
-                if customer.is_monthly:
-                    if int(t.jar_count) == 0 and float(t.amount) > 0:
-                        total_paid += float(t.amount)
-                else:
-                    if float(t.amount) > 0:
-                        total_paid += float(t.amount)
-                
-                t.updated_at = now
-                row_idx = id_to_row.get(str(t.id))
-                if row_idx:
-                    row_values = self._object_to_transaction_row(t)
-                    with sheets_lock:
-                        self._retry(self.transactions_sheet.update, f"A{row_idx}:I{row_idx}", [row_values])
-                continue
-
-            is_first = False
-            jar_count = int(t.jar_count)
-            amount = float(t.amount)
-
-            running_balance, excess = calculate_new_balance(
-                running_balance, jar_count, amount, customer.is_monthly, customer.rate
-            )
-
-            if excess > 0.0:
-                # Append excess info safely
-                base_desc = t.description or "Payment received"
-                if "Excess:" not in base_desc:
-                    t.description = f"{base_desc} (Excess: ₹{excess:.2f})"
-
-            t.pending = running_balance
-            t.updated_at = now
-
-            # Accumulate totals
-            total_jars += jar_count
-            if customer.is_monthly:
-                if jar_count == 0 and amount > 0:
-                    total_paid += amount
-            else:
-                if amount > 0:
-                    total_paid += amount
-
-            row_idx = id_to_row.get(str(t.id))
-            if row_idx:
-                row_values = self._object_to_transaction_row(t)
-                with sheets_lock:
-                    self._retry(self.transactions_sheet.update, f"A{row_idx}:I{row_idx}", [row_values])
+        total_jars = sum(int(t.jar_count) for t in txns)
+        total_paid = sum(float(t.amount) for t in txns if float(t.amount) > 0)
+        total_pending = max(0.0, sum(float(t.pending) for t in txns) - total_paid)
 
         customer.jar = total_jars
         customer.paid = total_paid
-        customer.pending = running_balance
-        customer.updated_at = now
+        customer.pending = total_pending
+        customer.updated_at = datetime.now()
 
-        with sheets_lock:
-            cust_id_list = self._retry(self.customers_sheet.col_values, 1)
-        
-        cust_row_idx = -1
-        for idx, cid in enumerate(cust_id_list):
-            if str(cid) == customer_id:
-                cust_row_idx = idx + 1
-                break
-
-        if cust_row_idx != -1:
+        # Update customer row in 'customers' sheet using row_idx directly
+        if hasattr(customer, 'row_idx') and customer.row_idx:
             cust_row_values = self._object_to_customer_row(customer)
             with sheets_lock:
-                self._retry(self.customers_sheet.update, f"A{cust_row_idx}:M{cust_row_idx}", [cust_row_values])
+                self._retry(self.customers_sheet.update, f"A{customer.row_idx}:M{customer.row_idx}", [cust_row_values])
+        else:
+            # Fallback
+            with sheets_lock:
+                cust_id_list = self._retry(self.customers_sheet.col_values, 1)
+            
+            cust_row_idx = -1
+            for idx, cid in enumerate(cust_id_list):
+                if str(cid) == customer_id:
+                    cust_row_idx = idx + 1
+                    break
+
+            if cust_row_idx != -1:
+                cust_row_values = self._object_to_customer_row(customer)
+                with sheets_lock:
+                    self._retry(self.customers_sheet.update, f"A{cust_row_idx}:M{cust_row_idx}", [cust_row_values])
 
         self._customers_cache = None
         self._transactions_cache = None
@@ -1220,6 +1164,7 @@ class GoogleSheetsClient:
             if not sheet:
                 try:
                     sheet = self._retry(self.spreadsheet.add_worksheet, new_title, rows="1000", cols="5")
+                    self._invalidate_worksheets_cache()
                     self._worksheet_cache[customer_id] = sheet
                 except Exception as e:
                     print(f"Error creating customer worksheet {new_title}: {e}")
@@ -1227,12 +1172,19 @@ class GoogleSheetsClient:
             elif sheet.title != new_title:
                 try:
                     self._retry(sheet.update_title, new_title)
+                    self._invalidate_worksheets_cache()
                     self._worksheet_cache[customer_id] = sheet
                 except Exception as e:
                     print(f"Error updating customer worksheet title: {e}")
                 
         txns = self.get_transactions_by_customer(customer_id)
-        txns.sort(key=lambda x: x.date or datetime.min)
+        def safe_sort_key(t):
+            try:
+                tid = int(t.id)
+            except:
+                tid = 0
+            return (t.date or datetime.min, tid)
+        txns.sort(key=safe_sort_key)
         
         rows = [
             [f"ID: {customer_id}", "", "", "", ""],
@@ -1241,34 +1193,13 @@ class GoogleSheetsClient:
             ["Date", "Jar", "Pending Amount", "Paid Amount", "Description"]
         ]
         
-        is_monthly = customer.is_monthly
-        running_pending = 0.0
-        
         for t in txns:
             date_str = t.date.strftime("%Y-%m-%d") if t.date else ""
             jar = t.jar_count
             desc = t.description or ""
             
-            if is_monthly:
-                cost = 0.0
-                payment = 0.0
-                if jar > 0:
-                    cost = abs(t.amount)
-                    payment = 0.0
-                else:
-                    if t.amount > 0:
-                        payment = t.amount
-                        cost = 0.0
-                    else:
-                        cost = abs(t.amount)
-                        payment = 0.0
-                
-                running_pending = running_pending + cost - payment
-                paid_amount = payment
-                pending_amount = running_pending
-            else:
-                paid_amount = t.amount
-                pending_amount = t.pending
+            paid_amount = t.amount
+            pending_amount = t.pending
             
             rows.append([
                 date_str,
