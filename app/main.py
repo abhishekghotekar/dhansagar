@@ -1,8 +1,6 @@
 import os
 import uvicorn
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from app.routes.customer_routes import router as customer_router
 from app.core.config import USE_GOOGLE_SHEETS
 from app.db.sheets import sheets_client

@@ -54,9 +54,6 @@ def calculate_new_balance(current_balance: float, jar_count: int, amount: float,
     remaining_balance = max(0.0, remaining_balance)
     return remaining_balance, excess_amount
 
-    remaining_balance = max(0.0, remaining_balance)
-    return remaining_balance, excess_amount
-
 class CustomerObj:
     def __init__(self, **kwargs):
         self.id = kwargs.get("id", "")
@@ -71,7 +68,7 @@ class CustomerObj:
         self.is_monthly = kwargs.get("is_monthly", False)
         self.created_at = kwargs.get("created_at")
         self.updated_at = kwargs.get("updated_at")
-        self.rate = float(kwargs.get("rate", 30.0))
+        self.rate = float(kwargs.get("rate", 25.0))
         self.row_idx = kwargs.get("row_idx", None)
         self.transactions = []
 
@@ -316,9 +313,9 @@ class GoogleSheetsClient:
             pending = 0.0
 
         try:
-            rate = float(row_dict.get("rate", 30.0))
+            rate = float(row_dict.get("rate", 25.0))
         except:
-            rate = 30.0
+            rate = 25.0
 
         success = str(row_dict.get("success", "")).lower() == "true"
         is_monthly = str(row_dict.get("is_monthly", "")).lower() == "true"
@@ -447,10 +444,10 @@ class GoogleSheetsClient:
 
         # Check duplicate phone number — raise error instead of silently updating
         cust_num = data.get("customer_number")
-        if cust_num:
+        if cust_num and str(cust_num).strip():
             existing = self.get_all_customers()
             for c in existing:
-                if c.customer_number == cust_num:
+                if c.customer_number and c.customer_number.strip() == str(cust_num).strip():
                     raise Exception(f"Customer with phone number '{cust_num}' already exists (Name: {c.customer_name}). Use update instead.")
 
         doc_id = str(uuid.uuid4())
@@ -478,7 +475,7 @@ class GoogleSheetsClient:
             is_monthly=data.get("is_monthly", False),
             created_at=now,
             updated_at=now,
-            rate=float(data.get("rate", 30.0))
+            rate=float(data.get("rate", 25.0))
         )
 
         row_values = self._object_to_customer_row(customer)
@@ -761,19 +758,15 @@ class GoogleSheetsClient:
 
         customer_id = data.get("customer_id", "")
         
-        # Calculate/retrieve pending value
+        # Calculate/retrieve pending value (Direct Baki minus Jama calculation, no jar rate)
         pending_val = data.get("pending")
         if pending_val is None:
-            cust = self.get_customer(customer_id)
-            if cust:
-                pending_val = float(data.get("jar_count", 0)) * cust.rate - float(data.get("amount", 0))
-            else:
-                pending_val = 0.0
+            pending_val = - float(data.get("amount", 0.0))
         else:
             try:
-                pending_val = float(pending_val)
+                pending_val = float(pending_val) - float(data.get("amount", 0.0))
             except:
-                pending_val = 0.0
+                pending_val = - float(data.get("amount", 0.0))
 
         txn = TransactionObj(
             id=next_id,
@@ -1115,7 +1108,7 @@ class GoogleSheetsClient:
 
         total_jars = sum(int(t.jar_count) for t in txns)
         total_paid = sum(float(t.amount) for t in txns if float(t.amount) > 0)
-        total_pending = max(0.0, sum(float(t.pending) for t in txns) - total_paid)
+        total_pending = max(0.0, sum(float(t.pending) for t in txns))
 
         customer.jar = total_jars
         customer.paid = total_paid

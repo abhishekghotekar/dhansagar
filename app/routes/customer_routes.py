@@ -89,8 +89,8 @@ def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depe
 
         total_jars = sum(t.jar_count for t in txns)
         total_paid = sum(t.amount for t in txns if t.amount > 0)
-        total_pending = max(0.0, sum(t.pending for t in txns) - total_paid)
-        total_cost = sum(t.pending for t in txns)
+        total_pending = customer.pending
+        total_cost = total_pending + total_paid
 
         delivery_records = []
         for t in txns:
@@ -181,7 +181,7 @@ def get_customer_records_by_date(
     """
     try:
         customer = sheets_client.get_customer(customer_id)
-        if not customer or customer.is_monthly:
+        if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
         txns = list(customer.transactions)
@@ -237,8 +237,8 @@ def get_customer_records_by_date(
         # --- Running totals ---
         total_jars   = sum(t.jar_count for t in txns)
         total_paid   = sum(t.amount for t in txns if t.amount > 0)
-        total_pending = max(0.0, sum(t.pending for t in txns) - total_paid)
-        total_cost   = sum(t.pending for t in txns)
+        total_pending = customer.pending
+        total_cost   = total_pending + total_paid
 
         return {
             "customer_id": customer_id,
@@ -302,8 +302,8 @@ def download_pdf(db = Depends(get_db)):
                 c.customer_number,
                 status,
                 str(c.jar),
-                f"${c.paid}",
-                f"${c.pending}"
+                f"Rs. {c.paid}",
+                f"Rs. {c.pending}"
             ]
             data.append(row)
             
