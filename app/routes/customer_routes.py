@@ -144,7 +144,17 @@ def refresh_data(db = Depends(get_db)):
         # 2. Force refresh - ALL customers + their transactions fresh fetch
         all_customers = get_all_customers(db, exclude_monthly=False, force_refresh=True)
 
-        # 3. Pratek customer chi complete history (transactions sahit) return karo
+        # 3. Recalculate balances to ensure Jama is properly subtracted from Baki
+        for c in all_customers:
+            try:
+                sheets_client.recalculate_customer_balances(c.id)
+            except Exception as e:
+                print(f"Error recalculating customer balance for {c.id}: {e}")
+
+        # Fetch updated customers list after recalculating
+        all_customers = get_all_customers(db, exclude_monthly=False, force_refresh=True)
+
+        # 4. Pratek customer chi complete history (transactions sahit) return karo
         result = []
         for c in all_customers:
             customer_dict = c.dict()  # transactions already included via CustomerObj.dict()

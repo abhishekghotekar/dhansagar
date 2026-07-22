@@ -1095,6 +1095,7 @@ class GoogleSheetsClient:
     def recalculate_customer_balances(self, customer_id: str):
         """
         Recalculates the totals and stores the final outstanding balance in the 'customers' sheet.
+        Subtracts Jama (paid amount) from Baki (pending amount) correctly.
         """
         self.initialize()
         if not self.initialized:
@@ -1106,9 +1107,37 @@ class GoogleSheetsClient:
 
         txns = self.get_transactions_by_customer(customer_id, force_refresh=True)
 
-        total_jars = sum(int(t.jar_count) for t in txns)
-        total_paid = sum(float(t.amount) for t in txns if float(t.amount) > 0)
-        total_pending = max(0.0, sum(float(t.pending) for t in txns))
+        def safe_sort_key(t):
+            try:
+                tid = int(t.id)
+            except:
+                tid = 0
+            return (t.date or datetime.min, tid)
+
+        txns_chrono = sorted(txns, key=safe_sort_key)
+
+        rate = getattr(customer, 'rate', 25.0) or 25.0
+
+        total_jars = 0
+        total_paid = 0.0
+        running_baki = 0.0
+
+        txn_updates = []
+        for t in txns_chrono:
+            j_cnt = int(t.jar_count)
+            p_amt = float(t.amount)
+            total_jars += j_cnt
+            if p_amt > 0:
+                total_paid += p_amt
+
+            net_change = (j_cnt * rate) - p_amt
+            running_baki += net_change
+            t.pending = max(0.0, running_baki)
+
+            if hasattr(t, 'row_idx') and t.row_idx:
+                txn_updates.append((t.row_idx, self._object_to_transaction_row(t)))
+
+        total_pending = max(0.0, running_baki)
 
         customer.jar = total_jars
         customer.paid = total_paid
@@ -1135,6 +1164,15 @@ class GoogleSheetsClient:
                 cust_row_values = self._object_to_customer_row(customer)
                 with sheets_lock:
                     self._retry(self.customers_sheet.update, f"A{cust_row_idx}:M{cust_row_idx}", [cust_row_values])
+
+        # Update transaction rows in 'transactions' sheet
+        if txn_updates:
+            with sheets_lock:
+                for r_idx, row_vals in txn_updates:
+                    try:
+                        self._retry(self.transactions_sheet.update, f"A{r_idx}:I{r_idx}", [row_vals])
+                    except Exception as e:
+                        print(f"Error updating transaction row {r_idx}: {e}")
 
         self._customers_cache = None
         self._transactions_cache = None
