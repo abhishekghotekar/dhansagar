@@ -115,7 +115,7 @@ def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depe
                 "date": safe_iso(t.date),
                 "jar": t.jar_count,
                 "jama": t.amount,
-                "baki": t.pending,
+                "baki": t.manual_bill,
                 "description": t.description or "",
                 "created_at": safe_iso(t.created_at),
                 "updated_at": safe_iso(t.updated_at)
@@ -212,7 +212,7 @@ def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate):
             "date": safe_iso(txn.date),
             "jar": txn.jar_count,
             "jama": txn.amount,
-            "baki": txn.pending,
+            "baki": txn.manual_bill,
             "description": txn.description or "",
             "created_at": safe_iso(txn.created_at)
         },
@@ -273,7 +273,7 @@ def _process_update_daily_entry(record_id: int, entry: DailyEntryUpdate, custome
             "date": safe_iso(txn.date),
             "jar": txn.jar_count,
             "jama": txn.amount,
-            "baki": txn.pending,
+            "baki": txn.manual_bill,
             "description": txn.description or "",
             "updated_at": safe_iso(txn.updated_at)
         },
@@ -441,7 +441,7 @@ def get_customer_records_by_date(
                 "id": str(t.id),
                 "jar": t.jar_count,
                 "jama": t.amount,       # Jama = Paid
-                "baki": t.pending,      # Baki = Pending
+                "baki": t.manual_bill,  # Baki = Manual Bill added in this entry
                 "description": t.description or "",
                 "created_at": safe_iso(t.created_at)
             })

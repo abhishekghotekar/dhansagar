@@ -11,15 +11,10 @@ class TransactionSchema(BaseModel):
 
 class Customer(BaseModel):
     customer_name: str = Field(..., example="Avinash")
-    customer_address: str = Field(..., example="Shirdi")
     customer_number: str = Field(..., example="9876543210")
-    jar: int = 0
-    paid: float = 0.0
-    pending: float = 0.0
+    customer_address: Optional[str] = ""
     success: bool = False
     date: str | None = None
-    is_monthly: bool = False
-    rate: float = 25.0
     transactions: Optional[List[TransactionSchema]] = None
 
     class Config:
@@ -34,8 +29,6 @@ class CustomerUpdate(BaseModel):
     pending: float | None = None
     success: bool | None = None
     date: str | None = None
-    is_monthly: bool | None = None
-    rate: float | None = None
     transactions: Optional[List[TransactionSchema]] = None
 
 class DailyEntryCreate(BaseModel):

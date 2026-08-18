@@ -81,7 +81,7 @@ class CustomerObj:
                 "date": t.date.isoformat() if isinstance(t.date, datetime) else t.date,
                 "jar": t.jar_count,
                 "paid": t.amount,
-                "pending": t.pending,
+                "pending": t.manual_bill,
                 "description": t.description or "",
                 "created_at": t.created_at.isoformat() if isinstance(t.created_at, datetime) else (t.created_at or ""),
                 "updated_at": t.updated_at.isoformat() if isinstance(t.updated_at, datetime) else (t.updated_at or "")
@@ -590,7 +590,7 @@ class GoogleSheetsClient:
                     "date": t.date.strftime("%Y-%m-%d") if t.date else "",
                     "jar": int(t.jar_count),
                     "paid": float(t.amount),
-                    "pending": float(t.pending)
+                    "pending": float(t.manual_bill)
                 })
             
             incoming_simplified = []
@@ -1233,7 +1233,7 @@ class GoogleSheetsClient:
             desc = t.description or ""
             
             paid_amount = t.amount
-            pending_amount = t.pending
+            pending_amount = t.manual_bill
             
             rows.append([
                 date_str,
