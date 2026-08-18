@@ -469,17 +469,31 @@ class GoogleSheetsClient:
         else:
             parsed_date = self._parse_datetime(date_val) or now
 
+        # Extract jar, paid, pending, is_monthly from root or transactions
+        jar_val = data.get("jar") or 0
+        paid_val = data.get("paid") or 0.0
+        pending_val = data.get("pending") or 0.0
+        is_monthly_val = data.get("is_monthly") or data.get("isMonthly") or False
+
+        transactions = data.get("transactions") or []
+        if jar_val == 0 and paid_val == 0.0 and pending_val == 0.0 and transactions:
+            for tx in transactions:
+                if isinstance(tx, dict):
+                    jar_val += int(tx.get("jar") or 0)
+                    paid_val += float(tx.get("paid") or tx.get("jama") or 0.0)
+                    pending_val += float(tx.get("pending") or tx.get("baki") or 0.0)
+
         customer = CustomerObj(
             id=doc_id,
             customer_name=data.get("customer_name", ""),
             customer_address=data.get("customer_address", ""),
             customer_number=data.get("customer_number", ""),
-            jar=data.get("jar", 0),
-            paid=data.get("paid", 0.0),
-            pending=data.get("pending", 0.0),
+            jar=int(jar_val),
+            paid=float(paid_val),
+            pending=float(pending_val),
             success=data.get("success", False),
             date=parsed_date,
-            is_monthly=data.get("is_monthly", False),
+            is_monthly=bool(is_monthly_val),
             created_at=now,
             updated_at=now,
             rate=float(data.get("rate", 25.0))
@@ -756,7 +770,12 @@ class GoogleSheetsClient:
         
         # Calculate/retrieve pending value (Direct Baki minus Jama calculation, no jar rate)
         pending_val = data.get("pending")
-        if pending_val is None:
+        if data.get("description") in ["Initial Record", "Opening Balance"]:
+            try:
+                pending_val = float(pending_val or 0.0)
+            except:
+                pending_val = 0.0
+        elif pending_val is None:
             pending_val = - float(data.get("amount", 0.0))
         else:
             try:
@@ -969,7 +988,8 @@ class GoogleSheetsClient:
                 jar_count=int(t.get("jar", 0)),
                 amount=float(t.get("paid", 0.0)),
                 pending=float(t.get("pending", 0.0)),
-                description="Delivery Log",
+                manual_bill=float(t.get("manual_bill") or 0.0),
+                description=t.get("description") or "Delivery Log",
                 created_at=now,
                 updated_at=now
             )
@@ -1128,11 +1148,20 @@ class GoogleSheetsClient:
             if p_amt > 0:
                 total_paid += p_amt
 
-            # If it's an initial balance record without jars/payment, preserve its pending amount as opening balance
-            if j_cnt == 0 and p_amt == 0 and (getattr(t, 'description', '') in ["Initial Record", "Opening Balance"] or float(getattr(t, 'pending', 0.0) or 0.0) > 0):
+            # If jar_count > 0 and manual_bill is 0.0, fall back to jar_count * rate
+            m_bill = float(getattr(t, 'manual_bill', 0.0) or 0.0)
+            if j_cnt > 0 and m_bill == 0.0:
+                bill_amount = j_cnt * rate
+            else:
+                bill_amount = m_bill
+
+            # If it's an initial balance record, preserve its pending amount as opening balance
+            if getattr(t, 'description', '') in ["Initial Record", "Opening Balance"]:
+                net_change = float(getattr(t, 'pending', 0.0) or 0.0)
+            elif j_cnt == 0 and p_amt == 0 and float(getattr(t, 'pending', 0.0) or 0.0) > 0:
                 net_change = float(getattr(t, 'pending', 0.0) or 0.0)
             else:
-                net_change = getattr(t, 'manual_bill', 0.0) - p_amt
+                net_change = bill_amount - p_amt
 
             running_baki += net_change
             t.pending = running_baki

@@ -8,6 +8,8 @@ class TransactionSchema(BaseModel):
     jar: int
     paid: float
     pending: float
+    description: Optional[str] = "Delivery Log"
+    manual_bill: Optional[float] = 0.0
 
 class Customer(BaseModel):
     customer_name: str = Field(..., example="Avinash")
@@ -15,6 +17,10 @@ class Customer(BaseModel):
     customer_address: Optional[str] = ""
     success: bool = False
     date: str | None = None
+    jar: Optional[int] = 0
+    paid: Optional[float] = 0.0
+    pending: Optional[float] = 0.0
+    is_monthly: Optional[bool] = False
     transactions: Optional[List[TransactionSchema]] = None
 
     class Config:
