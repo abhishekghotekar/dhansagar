@@ -277,7 +277,7 @@ class GoogleSheetsClient:
             # Migration check: ensure all headers are present (specifically "pending" at the end)
             existing_headers = self._retry(self.transactions_sheet.row_values, 1)
             if existing_headers and len(existing_headers) < len(self.transaction_headers):
-                self._retry(self.transactions_sheet.update, "A1:I1", [self.transaction_headers])
+                self._retry(self.transactions_sheet.update, "A1:J1", [self.transaction_headers])
         except gspread.exceptions.WorksheetNotFound:
             self.transactions_sheet = self._retry(self.spreadsheet.add_worksheet, "transactions", rows="5000", cols="10")
             self._retry(self.transactions_sheet.append_row, self.transaction_headers)
@@ -788,7 +788,7 @@ class GoogleSheetsClient:
             next_row = last_data_row + 1
             self._retry(
                 self.transactions_sheet.update,
-                f"A{next_row}:I{next_row}",
+                f"A{next_row}:J{next_row}",
                 [row_values],
                 value_input_option="USER_ENTERED"
             )
@@ -855,7 +855,7 @@ class GoogleSheetsClient:
 
         row_values = self._object_to_transaction_row(txn)
         with sheets_lock:
-            self._retry(self.transactions_sheet.update, f"A{row_idx}:I{row_idx}", [row_values])
+            self._retry(self.transactions_sheet.update, f"A{row_idx}:J{row_idx}", [row_values])
             # Full cache invalidation on transaction update: ensures fresh data for both mobiles
             self._customers_cache = None
             self._transactions_cache = None
@@ -1005,7 +1005,7 @@ class GoogleSheetsClient:
                 
                 self._retry(
                     self.transactions_sheet.update,
-                    f"A{next_row}:I{end_row}",
+                    f"A{next_row}:J{end_row}",
                     rows_to_add,
                     value_input_option="USER_ENTERED"
                 )
@@ -1173,7 +1173,7 @@ class GoogleSheetsClient:
             with sheets_lock:
                 for r_idx, row_vals in txn_updates:
                     try:
-                        self._retry(self.transactions_sheet.update, f"A{r_idx}:I{r_idx}", [row_vals])
+                        self._retry(self.transactions_sheet.update, f"A{r_idx}:J{r_idx}", [row_vals])
                     except Exception as e:
                         print(f"Error updating transaction row {r_idx}: {e}")
 
