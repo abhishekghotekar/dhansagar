@@ -38,3 +38,18 @@ class CustomerUpdate(BaseModel):
     rate: float | None = None
     transactions: Optional[List[TransactionSchema]] = None
 
+class DailyEntryCreate(BaseModel):
+    customer_id: Optional[str] = None
+    date: Optional[str] = None
+    jar_count: int = Field(0, description="Delivered jar count")
+    amount: float = Field(0.0, description="Amount paid / Jama")
+    pending: float = Field(0.0, description="Manual pending amount (Bill)")
+    description: Optional[str] = "Delivery"
+
+class DailyEntryUpdate(BaseModel):
+    date: Optional[str] = None
+    jar_count: Optional[int] = None
+    amount: Optional[float] = None
+    pending: Optional[float] = None
+    description: Optional[str] = None
+

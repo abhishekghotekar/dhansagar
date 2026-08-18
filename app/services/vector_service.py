@@ -26,6 +26,13 @@ def update_customer(doc_id: str, data: dict, db=None):
     return sheets_client.update_customer(doc_id, data)
 
 
+def safe_iso(val):
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        return val.isoformat()
+    return str(val)
+
 # 🔍 Search customer in Google Sheets
 def search_customer(query: str, db=None):
     res = sheets_client.search_customers(query)
@@ -35,7 +42,7 @@ def search_customer(query: str, db=None):
         for t in customer.transactions:
             formatted_txns.append({
                 "id": str(t.id),
-                "date": t.date.isoformat() if t.date else "",
+                "date": safe_iso(t.date) or "",
                 "jar": t.jar_count,
                 "paid": t.amount,
                 "pending": t.pending
@@ -49,10 +56,10 @@ def search_customer(query: str, db=None):
             "paid": customer.paid,
             "pending": customer.pending,
             "success": customer.success,
-            "date": customer.date.isoformat() if customer.date else None,
+            "date": safe_iso(customer.date),
             "is_monthly": customer.is_monthly,
-            "created_at": customer.created_at.isoformat() if customer.created_at else None,
-            "updated_at": customer.updated_at.isoformat() if customer.updated_at else None,
+            "created_at": safe_iso(customer.created_at),
+            "updated_at": safe_iso(customer.updated_at),
             "transactions": formatted_txns,
             "distance": 0.0 # Mock distance
         }

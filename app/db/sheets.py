@@ -113,6 +113,7 @@ class TransactionObj:
         self.jar_count = kwargs.get("jar_count", 0)
         self.amount = kwargs.get("amount", 0.0)
         self.pending = kwargs.get("pending", 0.0)
+        self.manual_bill = kwargs.get("manual_bill", 0.0)
         self.description = kwargs.get("description", "")
         self.created_at = kwargs.get("created_at")
         self.updated_at = kwargs.get("updated_at")
@@ -126,6 +127,7 @@ class TransactionObj:
             "jar_count": self.jar_count,
             "amount": self.amount,
             "pending": self.pending,
+            "manual_bill": self.manual_bill,
             "description": self.description,
             "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
             "updated_at": self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at
@@ -151,7 +153,7 @@ class GoogleSheetsClient:
         ]
         self.transaction_headers = [
             "id", "customer_id", "date", "jar_count", "amount", 
-            "description", "created_at", "updated_at", "pending"
+            "description", "created_at", "updated_at", "pending", "manual_bill"
         ]
 
         # Cache for worksheets and data to prevent hitting Google Sheet API 429 Rate Limits
@@ -353,6 +355,10 @@ class GoogleSheetsClient:
             pending = float(row_dict.get("pending", 0.0))
         except:
             pending = 0.0
+        try:
+            manual_bill = float(row_dict.get("manual_bill", 0.0))
+        except:
+            manual_bill = 0.0
 
         return TransactionObj(
             id=txn_id,
@@ -361,6 +367,7 @@ class GoogleSheetsClient:
             jar_count=jar_count,
             amount=amount,
             pending=pending,
+            manual_bill=manual_bill,
             description=str(row_dict.get("description", "")),
             created_at=self._parse_datetime(row_dict.get("created_at")),
             updated_at=self._parse_datetime(row_dict.get("updated_at"))
@@ -430,8 +437,8 @@ class GoogleSheetsClient:
             return [c for c in customers if not c.is_monthly]
         return list(customers)
 
-    def get_customer(self, customer_id: str):
-        customers = self.get_all_customers()
+    def get_customer(self, customer_id: str, force_refresh: bool = False):
+        customers = self.get_all_customers(force_refresh=force_refresh)
         for c in customers:
             if c.id == customer_id:
                 return c
@@ -608,25 +615,10 @@ class GoogleSheetsClient:
             else:
                 self.sync_customer_sheet(customer_id)
         else:
-            jar_diff = customer.jar - old_jar
-            paid_diff = customer.paid - old_paid
-
-            if jar_diff != 0 or abs(paid_diff) > 0.001:
-                description = "Update"
-                if jar_diff > 0: description = f"Added {jar_diff} jars"
-                if paid_diff > 0: description = f"Paid {paid_diff}"
-                if jar_diff > 0 and paid_diff > 0: description = f"Added {jar_diff} jars & Paid {paid_diff}"
-
-                self.add_transaction({
-                    "customer_id": customer_id,
-                    "date": customer.date or now,
-                    "jar_count": jar_diff,
-                    "amount": paid_diff,
-                    "pending": customer.pending,
-                    "description": description
-                })
-            else:
-                self.sync_customer_sheet(customer_id)
+            # DO NOT create automatic transactions based on jar/paid differences.
+            # Transactions should only be added explicitly via add_transaction endpoints.
+            # Simply recalculate the correct balances from the existing true transaction records.
+            self.recalculate_customer_balances(customer_id)
 
         return True
 
@@ -740,11 +732,15 @@ class GoogleSheetsClient:
             raise Exception("Google Sheets backend not initialized.")
 
         txns = self.get_all_transactions()
-        # Find next sequential ID
+        # Find next sequential ID safely
         max_id = 0
         for t in txns:
-            if isinstance(t.id, int) and t.id > max_id:
-                max_id = t.id
+            try:
+                tid = int(t.id)
+                if tid > max_id:
+                    max_id = tid
+            except (ValueError, TypeError):
+                pass
         next_id = max_id + 1
 
         now = datetime.now()
@@ -775,6 +771,7 @@ class GoogleSheetsClient:
             jar_count=int(data.get("jar_count", 0)),
             amount=float(data.get("amount", 0.0)),
             pending=pending_val,
+            manual_bill=float(data.get("manual_bill", 0.0)),
             description=data.get("description", ""),
             created_at=now,
             updated_at=now
@@ -852,6 +849,7 @@ class GoogleSheetsClient:
         if "jar_count" in data: txn.jar_count = int(data["jar_count"])
         if "amount" in data: txn.amount = float(data["amount"])
         if "pending" in data: txn.pending = float(data["pending"])
+        if "manual_bill" in data: txn.manual_bill = float(data["manual_bill"])
         if "description" in data: txn.description = data["description"]
         txn.updated_at = now
 
@@ -1124,20 +1122,25 @@ class GoogleSheetsClient:
 
         txn_updates = []
         for t in txns_chrono:
-            j_cnt = int(t.jar_count)
-            p_amt = float(t.amount)
+            j_cnt = int(t.jar_count or 0)
+            p_amt = float(t.amount or 0.0)
             total_jars += j_cnt
             if p_amt > 0:
                 total_paid += p_amt
 
-            net_change = (j_cnt * rate) - p_amt
+            # If it's an initial balance record without jars/payment, preserve its pending amount as opening balance
+            if j_cnt == 0 and p_amt == 0 and (getattr(t, 'description', '') in ["Initial Record", "Opening Balance"] or float(getattr(t, 'pending', 0.0) or 0.0) > 0):
+                net_change = float(getattr(t, 'pending', 0.0) or 0.0)
+            else:
+                net_change = getattr(t, 'manual_bill', 0.0) - p_amt
+
             running_baki += net_change
-            t.pending = max(0.0, running_baki)
+            t.pending = running_baki
 
             if hasattr(t, 'row_idx') and t.row_idx:
                 txn_updates.append((t.row_idx, self._object_to_transaction_row(t)))
 
-        total_pending = max(0.0, running_baki)
+        total_pending = running_baki
 
         customer.jar = total_jars
         customer.paid = total_paid

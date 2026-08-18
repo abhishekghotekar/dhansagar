@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from app.schemas.customer_schema import Customer
+from app.schemas.customer_schema import Customer, DailyEntryCreate, DailyEntryUpdate
 from app.db.postgres import get_db
 from app.db.sheets import sheets_client
 from app.services.vector_service import (
@@ -18,6 +18,20 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
 
 router = APIRouter()
+
+def safe_iso(val):
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        return val.isoformat()
+    return str(val)
+
+def safe_date_str(val, fmt="%Y-%m-%d"):
+    if not val:
+        return ""
+    if isinstance(val, datetime):
+        return val.strftime(fmt)
+    return str(val)
 
 
 # 🟢 Store customer
@@ -80,29 +94,31 @@ def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depe
                 tid = int(t.id)
             except:
                 tid = 0
-            return (t.date if t.date else datetime.min, tid)
+            t_dt = t.date if isinstance(t.date, datetime) else datetime.min
+            return (t_dt, tid)
         txns = sorted(
             customer.transactions,
             key=safe_sort_key,
             reverse=True
         )
 
+        rate = getattr(customer, 'rate', 25.0) or 25.0
         total_jars = sum(t.jar_count for t in txns)
         total_paid = sum(t.amount for t in txns if t.amount > 0)
         total_pending = customer.pending
-        total_cost = total_pending + total_paid
+        total_cost = total_jars * rate
 
         delivery_records = []
         for t in txns:
             delivery_records.append({
                 "id": str(t.id),
-                "date": t.date.isoformat() if t.date else None,
+                "date": safe_iso(t.date),
                 "jar": t.jar_count,
                 "jama": t.amount,
                 "baki": t.pending,
                 "description": t.description or "",
-                "created_at": t.created_at.isoformat() if t.created_at else None,
-                "updated_at": t.updated_at.isoformat() if t.updated_at else None
+                "created_at": safe_iso(t.created_at),
+                "updated_at": safe_iso(t.updated_at)
             })
 
         return {
@@ -111,9 +127,9 @@ def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depe
             "customer_address": customer.customer_address,
             "customer_number": customer.customer_number,
             "success": customer.success,
-            "date": customer.date.isoformat() if customer.date else None,
-            "created_at": customer.created_at.isoformat() if customer.created_at else None,
-            "updated_at": customer.updated_at.isoformat() if customer.updated_at else None,
+            "date": safe_iso(customer.date),
+            "created_at": safe_iso(customer.created_at),
+            "updated_at": safe_iso(customer.updated_at),
             "delivery_records": delivery_records,
             "summary": {
                 "total_jars": total_jars,
@@ -169,6 +185,191 @@ def refresh_data(db = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Refresh failed: {str(e)}")
 
 
+def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate):
+    if not target_cust_id:
+        raise HTTPException(status_code=400, detail="Customer ID is required")
+
+    customer = sheets_client.get_customer(target_cust_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    txn = sheets_client.add_transaction({
+        "customer_id": target_cust_id,
+        "date": entry.date,
+        "jar_count": entry.jar_count,
+        "amount": entry.amount,
+        "manual_bill": entry.pending,
+        "description": entry.description or "Daily Delivery"
+    })
+
+    # Fetch updated customer summary
+    updated_customer = sheets_client.get_customer(target_cust_id, force_refresh=True)
+
+    return {
+        "message": "Daily entry added successfully",
+        "record": {
+            "id": str(txn.id),
+            "date": safe_iso(txn.date),
+            "jar": txn.jar_count,
+            "jama": txn.amount,
+            "baki": txn.pending,
+            "description": txn.description or "",
+            "created_at": safe_iso(txn.created_at)
+        },
+        "customer_summary": {
+            "total_jars": updated_customer.jar if updated_customer else 0,
+            "total_paid": updated_customer.paid if updated_customer else 0.0,
+            "total_pending": updated_customer.pending if updated_customer else 0.0
+        }
+    }
+
+
+# ➕ Add daily date-wise entry (by path)
+@router.post("/customer/{customer_id}/add-entry")
+@router.post("/customer/{customer_id}/add-record")
+def add_daily_entry_by_customer_id(customer_id: str, entry: DailyEntryCreate, db = Depends(get_db)):
+    """
+    Tarikh-wise jar delivery aani jama (paid amount) chi entry add karto (via path customer_id).
+    """
+    try:
+        return _process_add_daily_entry(customer_id, entry)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding entry: {str(e)}")
+
+
+# ➕ Add daily date-wise entry (by body)
+@router.post("/add-entry")
+@router.post("/add-record")
+def add_daily_entry_generic(entry: DailyEntryCreate, db = Depends(get_db)):
+    """
+    Body madhil customer_id varun entry add karto.
+    """
+    try:
+        return _process_add_daily_entry(entry.customer_id, entry)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding entry: {str(e)}")
+
+
+def _process_update_daily_entry(record_id: int, entry: DailyEntryUpdate, customer_id: str = None):
+    update_dict = entry.dict(exclude_unset=True)
+    if "pending" in update_dict:
+        update_dict["manual_bill"] = update_dict.pop("pending")
+    
+    txn = sheets_client.update_transaction(record_id, update_dict)
+    if not txn:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    target_cust_id = txn.customer_id or customer_id
+    updated_customer = sheets_client.get_customer(target_cust_id, force_refresh=True) if target_cust_id else None
+
+    return {
+        "message": "Record updated successfully",
+        "record": {
+            "id": str(txn.id),
+            "date": safe_iso(txn.date),
+            "jar": txn.jar_count,
+            "jama": txn.amount,
+            "baki": txn.pending,
+            "description": txn.description or "",
+            "updated_at": safe_iso(txn.updated_at)
+        },
+        "customer_summary": {
+            "total_jars": updated_customer.jar if updated_customer else 0,
+            "total_paid": updated_customer.paid if updated_customer else 0.0,
+            "total_pending": updated_customer.pending if updated_customer else 0.0
+        } if updated_customer else None
+    }
+
+
+# ✏️ Update a specific date-wise record (by path)
+@router.put("/customer/{customer_id}/record/{record_id}")
+def update_daily_entry_by_customer_id(customer_id: str, record_id: int, entry: DailyEntryUpdate, db = Depends(get_db)):
+    """
+    Ek specific tarikhchi delivery record update karto aani balance recalculate karto.
+    """
+    try:
+        return _process_update_daily_entry(record_id, entry, customer_id=customer_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating record: {str(e)}")
+
+
+# ✏️ Update a specific date-wise record (by id)
+@router.put("/record/{record_id}")
+def update_daily_entry_by_id(record_id: int, entry: DailyEntryUpdate, db = Depends(get_db)):
+    """
+    Record ID varun delivery record update karto.
+    """
+    try:
+        return _process_update_daily_entry(record_id, entry)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating record: {str(e)}")
+
+
+def _process_delete_daily_entry(record_id: int, customer_id: str = None):
+    target_cust_id = customer_id
+    if not target_cust_id:
+        txns = sheets_client.get_all_transactions()
+        for t in txns:
+            try:
+                curr_id = int(t.id)
+            except:
+                curr_id = t.id
+            if curr_id == record_id:
+                target_cust_id = t.customer_id
+                break
+
+    success = sheets_client.delete_transaction(record_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    updated_customer = sheets_client.get_customer(target_cust_id, force_refresh=True) if target_cust_id else None
+
+    return {
+        "message": "Record deleted successfully",
+        "customer_summary": {
+            "total_jars": updated_customer.jar if updated_customer else 0,
+            "total_paid": updated_customer.paid if updated_customer else 0.0,
+            "total_pending": updated_customer.pending if updated_customer else 0.0
+        } if updated_customer else None
+    }
+
+
+# ❌ Delete a specific date-wise record (by path)
+@router.delete("/customer/{customer_id}/record/{record_id}")
+def delete_daily_entry_by_customer_id(customer_id: str, record_id: int, db = Depends(get_db)):
+    """
+    Ek specific tarikhchi delivery record delete karto.
+    """
+    try:
+        return _process_delete_daily_entry(record_id, customer_id=customer_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting record: {str(e)}")
+
+
+# ❌ Delete a specific date-wise record (by id)
+@router.delete("/record/{record_id}")
+def delete_daily_entry_by_id(record_id: int, db = Depends(get_db)):
+    """
+    Record ID varun delivery record delete karto.
+    """
+    try:
+        return _process_delete_daily_entry(record_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting record: {str(e)}")
+
+
 # 📅 Get customer records DATE BY DATE (chronological order)
 @router.get("/customer/{customer_id}/records")
 def get_customer_records_by_date(
@@ -211,11 +412,11 @@ def get_customer_records_by_date(
         # --- Date range filter ---
         if from_date:
             fd = _parse_date(from_date)
-            txns = [t for t in txns if t.date and t.date.date() >= fd.date()]
+            txns = [t for t in txns if t.date and (t.date.date() if isinstance(t.date, datetime) else datetime.min.date()) >= fd.date()]
 
         if to_date:
             td = _parse_date(to_date)
-            txns = [t for t in txns if t.date and t.date.date() <= td.date()]
+            txns = [t for t in txns if t.date and (t.date.date() if isinstance(t.date, datetime) else datetime.max.date()) <= td.date()]
 
 
         # --- Date-wise sort ---
@@ -225,14 +426,15 @@ def get_customer_records_by_date(
                 tid = int(t.id)
             except:
                 tid = 0
-            return (t.date if t.date else datetime.min, tid)
+            t_dt = t.date if isinstance(t.date, datetime) else datetime.min
+            return (t_dt, tid)
         txns.sort(key=safe_sort_key, reverse=reverse_order)
 
         # --- Group by date ---
         from collections import OrderedDict
         grouped: dict = OrderedDict()
         for t in txns:
-            date_key = t.date.strftime("%Y-%m-%d") if t.date else "Unknown"
+            date_key = safe_date_str(t.date) if t.date else "Unknown"
             if date_key not in grouped:
                 grouped[date_key] = []
             grouped[date_key].append({
@@ -241,14 +443,15 @@ def get_customer_records_by_date(
                 "jama": t.amount,       # Jama = Paid
                 "baki": t.pending,      # Baki = Pending
                 "description": t.description or "",
-                "created_at": t.created_at.isoformat() if t.created_at else None
+                "created_at": safe_iso(t.created_at)
             })
 
         # --- Running totals ---
+        rate = getattr(customer, 'rate', 25.0) or 25.0
         total_jars   = sum(t.jar_count for t in txns)
         total_paid   = sum(t.amount for t in txns if t.amount > 0)
         total_pending = customer.pending
-        total_cost   = total_pending + total_paid
+        total_cost   = total_jars * rate
 
         return {
             "customer_id": customer_id,
@@ -257,8 +460,8 @@ def get_customer_records_by_date(
             "customer_address": customer.customer_address,
             "total_records": len(txns),
             "date_range": {
-                "from": from_date or (txns[-1].date.strftime("%Y-%m-%d") if txns else None),
-                "to":   to_date   or (txns[0].date.strftime("%Y-%m-%d")  if txns else None)
+                "from": from_date or (safe_date_str(txns[-1].date) if txns else None),
+                "to":   to_date   or (safe_date_str(txns[0].date) if txns else None)
             },
             "records_by_date": [
                 {
@@ -303,7 +506,7 @@ def download_pdf(db = Depends(get_db)):
         data = [['Date', 'Name', 'Address', 'Phone', 'Status', 'Jars', 'Paid', 'Pending']]
         
         for c in customers:
-            date_str = c.date.strftime("%Y-%m-%d") if c.date else ""
+            date_str = safe_date_str(c.date)
             status = "Active" if c.success else "Pending"
             row = [
                 date_str,
