@@ -1,9 +1,12 @@
-fastapi
-uvicorn
-python-dotenv
+fastapi>=0.111.0
+uvicorn>=0.29.0
+python-dotenv>=1.0.1
 
-reportlab
+# PDF generation
+reportlab>=4.1.0
 
-gspread
-google-auth
-
+# Google Sheets integration
+gspread>=6.1.2
+gspread-asyncio>=1.10.0
+google-auth>=2.29.0
+gspread_asyncio
