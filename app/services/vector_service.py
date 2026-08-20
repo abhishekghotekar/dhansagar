@@ -17,13 +17,13 @@ def parse_date(date_val):
             return datetime.now()
 
 # 🔵 Store customer in Google Sheets
-def store_customer(data: dict, db=None):
-    return sheets_client.store_customer(data)
+async def store_customer(data: dict, db=None):
+    return await sheets_client.store_customer(data)
 
 
 # ✏️ Update customer in Google Sheets
-def update_customer(doc_id: str, data: dict, db=None):
-    return sheets_client.update_customer(doc_id, data)
+async def update_customer(doc_id: str, data: dict, db=None):
+    return await sheets_client.update_customer(doc_id, data)
 
 
 def safe_iso(val):
@@ -34,8 +34,8 @@ def safe_iso(val):
     return str(val)
 
 # 🔍 Search customer in Google Sheets
-def search_customer(query: str, db=None):
-    res = sheets_client.search_customers(query)
+async def search_customer(query: str, db=None):
+    res = await sheets_client.search_customers(query)
     formatted_results = []
     for customer in res:
         formatted_txns = []
@@ -68,8 +68,8 @@ def search_customer(query: str, db=None):
     return formatted_results
 
 
-def get_all_customers(db=None, exclude_monthly: bool = False, force_refresh: bool = False):
-    customers = sheets_client.get_all_customers(exclude_monthly=exclude_monthly, force_refresh=force_refresh)
+async def get_all_customers(db=None, exclude_monthly: bool = False, force_refresh: bool = False):
+    customers = await sheets_client.get_all_customers(exclude_monthly=exclude_monthly, force_refresh=force_refresh)
     try:
         customers.sort(key=lambda x: x.updated_at or x.created_at or datetime.min, reverse=True)
     except:
@@ -78,7 +78,7 @@ def get_all_customers(db=None, exclude_monthly: bool = False, force_refresh: boo
 
 
 # ❌ Delete customer from Google Sheets
-def delete_customer(doc_id: str, db=None):
-    return sheets_client.delete_customer(doc_id)
+async def delete_customer(doc_id: str, db=None):
+    return await sheets_client.delete_customer(doc_id)
 
 

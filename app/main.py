@@ -7,12 +7,16 @@ from app.db.sheets import sheets_client
 
 from fastapi.middleware.cors import CORSMiddleware
 
-# Initialize Google Sheets
-if USE_GOOGLE_SHEETS:
-    print("Google Sheets backend is active. Initializing worksheets and headers...")
-    sheets_client.initialize()
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="Customer Vector API", version="1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if USE_GOOGLE_SHEETS:
+        print("Google Sheets backend is active. Initializing worksheets and headers...")
+        await sheets_client.initialize()
+    yield
+
+app = FastAPI(title="Customer Vector API", version="1.0", lifespan=lifespan)
 
 # Configure CORS Middleware
 app.add_middleware(

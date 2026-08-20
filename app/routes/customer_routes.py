@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from app.schemas.customer_schema import Customer, DailyEntryCreate, DailyEntryUpdate
+from app.schemas.customer_schema import Customer, CustomerCreate, DailyEntryCreate, DailyEntryUpdate
 from app.db.postgres import get_db
 from app.db.sheets import sheets_client
 from app.services.vector_service import (
@@ -36,9 +36,9 @@ def safe_date_str(val, fmt="%Y-%m-%d"):
 
 # 🟢 Store customer
 @router.post("/add-customer")
-def add_customer(customer: Customer, db = Depends(get_db)):
+async def add_customer(customer: CustomerCreate, db = Depends(get_db)):
     try:
-        doc_id = store_customer(customer.dict(), db)
+        doc_id = await store_customer(customer.dict(), db)
         return {
             "message": "Customer stored successfully",
             "id": doc_id
@@ -49,9 +49,9 @@ def add_customer(customer: Customer, db = Depends(get_db)):
 
 # ✏️ Update customer
 @router.put("/update/{doc_id}")
-def update(doc_id: str, customer: Customer, db = Depends(get_db)):
+async def update(doc_id: str, customer: Customer, db = Depends(get_db)):
     try:
-        success = update_customer(doc_id, customer.dict(exclude_unset=True), db)
+        success = await update_customer(doc_id, customer.dict(exclude_unset=True), db)
         if not success:
             raise HTTPException(status_code=404, detail="Customer not found")
         
@@ -62,29 +62,29 @@ def update(doc_id: str, customer: Customer, db = Depends(get_db)):
 
 # 🔍 Search customer (AI search)
 @router.get("/search")
-def search(q: str, db = Depends(get_db)):
+async def search(q: str, db = Depends(get_db)):
     if not q:
         return []
-    results = search_customer(q, db)
+    results = await search_customer(q, db)
     return results
 
 
 # 📄 Get all customers — Monthly customers included!
 @router.get("/all-customers")
-def get_all(force_refresh: bool = False, db = Depends(get_db)):
-    data = get_all_customers(db, exclude_monthly=False, force_refresh=force_refresh)
+async def get_all(force_refresh: bool = False, db = Depends(get_db)):
+    data = await get_all_customers(db, exclude_monthly=False, force_refresh=force_refresh)
     return [c.dict() for c in data]
 
 
 # 👤 Get single customer detail — all customers included
 @router.get("/customer/{customer_id}")
-def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depends(get_db)):
+async def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depends(get_db)):
     try:
         if force_refresh:
             sheets_client._invalidate_customers_cache()
             sheets_client._invalidate_transactions_cache()
 
-        customer = sheets_client.get_customer(customer_id)
+        customer = await sheets_client.get_customer(customer_id)
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
@@ -146,7 +146,7 @@ def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depe
 
 # 🔄 Refresh: Cache invalidate karo aani Google Sheets madhun ALL data with full history fetch karo
 @router.get("/refresh")
-def refresh_data(db = Depends(get_db)):
+async def refresh_data(db = Depends(get_db)):
     """
     Memory cache clear karto aani Google Sheets madhun saglya customers chi
     full history (transactions sahit) fetch karto.
@@ -158,17 +158,17 @@ def refresh_data(db = Depends(get_db)):
         sheets_client._invalidate_transactions_cache()
 
         # 2. Force refresh - ALL customers + their transactions fresh fetch
-        all_customers = get_all_customers(db, exclude_monthly=False, force_refresh=True)
+        all_customers = await get_all_customers(db, exclude_monthly=False, force_refresh=True)
 
         # 3. Recalculate balances to ensure Jama is properly subtracted from Baki
         for c in all_customers:
             try:
-                sheets_client.recalculate_customer_balances(c.id)
+                await sheets_client.recalculate_customer_balances(c.id)
             except Exception as e:
                 print(f"Error recalculating customer balance for {c.id}: {e}")
 
         # Fetch updated customers list after recalculating
-        all_customers = get_all_customers(db, exclude_monthly=False, force_refresh=True)
+        all_customers = await get_all_customers(db, exclude_monthly=False, force_refresh=True)
 
         # 4. Pratek customer chi complete history (transactions sahit) return karo
         result = []
@@ -185,15 +185,15 @@ def refresh_data(db = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Refresh failed: {str(e)}")
 
 
-def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate):
+async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate):
     if not target_cust_id:
         raise HTTPException(status_code=400, detail="Customer ID is required")
 
-    customer = sheets_client.get_customer(target_cust_id)
+    customer = await sheets_client.get_customer(target_cust_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    txn = sheets_client.add_transaction({
+    txn = await sheets_client.add_transaction({
         "customer_id": target_cust_id,
         "date": entry.date,
         "jar_count": entry.jar_count,
@@ -203,7 +203,7 @@ def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate):
     })
 
     # Fetch updated customer summary
-    updated_customer = sheets_client.get_customer(target_cust_id, force_refresh=True)
+    updated_customer = await sheets_client.get_customer(target_cust_id, force_refresh=True)
 
     return {
         "message": "Daily entry added successfully",
@@ -227,12 +227,12 @@ def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate):
 # ➕ Add daily date-wise entry (by path)
 @router.post("/customer/{customer_id}/add-entry")
 @router.post("/customer/{customer_id}/add-record")
-def add_daily_entry_by_customer_id(customer_id: str, entry: DailyEntryCreate, db = Depends(get_db)):
+async def add_daily_entry_by_customer_id(customer_id: str, entry: DailyEntryCreate, db = Depends(get_db)):
     """
     Tarikh-wise jar delivery aani jama (paid amount) chi entry add karto (via path customer_id).
     """
     try:
-        return _process_add_daily_entry(customer_id, entry)
+        return await _process_add_daily_entry(customer_id, entry)
     except HTTPException:
         raise
     except Exception as e:
@@ -242,29 +242,29 @@ def add_daily_entry_by_customer_id(customer_id: str, entry: DailyEntryCreate, db
 # ➕ Add daily date-wise entry (by body)
 @router.post("/add-entry")
 @router.post("/add-record")
-def add_daily_entry_generic(entry: DailyEntryCreate, db = Depends(get_db)):
+async def add_daily_entry_generic(entry: DailyEntryCreate, db = Depends(get_db)):
     """
     Body madhil customer_id varun entry add karto.
     """
     try:
-        return _process_add_daily_entry(entry.customer_id, entry)
+        return await _process_add_daily_entry(entry.customer_id, entry)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error adding entry: {str(e)}")
 
 
-def _process_update_daily_entry(record_id: int, entry: DailyEntryUpdate, customer_id: str = None):
+async def _process_update_daily_entry(record_id: int, entry: DailyEntryUpdate, customer_id: str = None):
     update_dict = entry.dict(exclude_unset=True)
     if "pending" in update_dict:
         update_dict["manual_bill"] = update_dict.pop("pending")
     
-    txn = sheets_client.update_transaction(record_id, update_dict)
+    txn = await sheets_client.update_transaction(record_id, update_dict)
     if not txn:
         raise HTTPException(status_code=404, detail="Record not found")
 
     target_cust_id = txn.customer_id or customer_id
-    updated_customer = sheets_client.get_customer(target_cust_id, force_refresh=True) if target_cust_id else None
+    updated_customer = await sheets_client.get_customer(target_cust_id, force_refresh=True) if target_cust_id else None
 
     return {
         "message": "Record updated successfully",
@@ -287,12 +287,12 @@ def _process_update_daily_entry(record_id: int, entry: DailyEntryUpdate, custome
 
 # ✏️ Update a specific date-wise record (by path)
 @router.put("/customer/{customer_id}/record/{record_id}")
-def update_daily_entry_by_customer_id(customer_id: str, record_id: int, entry: DailyEntryUpdate, db = Depends(get_db)):
+async def update_daily_entry_by_customer_id(customer_id: str, record_id: int, entry: DailyEntryUpdate, db = Depends(get_db)):
     """
     Ek specific tarikhchi delivery record update karto aani balance recalculate karto.
     """
     try:
-        return _process_update_daily_entry(record_id, entry, customer_id=customer_id)
+        return await _process_update_daily_entry(record_id, entry, customer_id=customer_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -301,22 +301,22 @@ def update_daily_entry_by_customer_id(customer_id: str, record_id: int, entry: D
 
 # ✏️ Update a specific date-wise record (by id)
 @router.put("/record/{record_id}")
-def update_daily_entry_by_id(record_id: int, entry: DailyEntryUpdate, db = Depends(get_db)):
+async def update_daily_entry_by_id(record_id: int, entry: DailyEntryUpdate, db = Depends(get_db)):
     """
     Record ID varun delivery record update karto.
     """
     try:
-        return _process_update_daily_entry(record_id, entry)
+        return await _process_update_daily_entry(record_id, entry)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating record: {str(e)}")
 
 
-def _process_delete_daily_entry(record_id: int, customer_id: str = None):
+async def _process_delete_daily_entry(record_id: int, customer_id: str = None):
     target_cust_id = customer_id
     if not target_cust_id:
-        txns = sheets_client.get_all_transactions()
+        txns = await sheets_client.get_all_transactions()
         for t in txns:
             try:
                 curr_id = int(t.id)
@@ -326,11 +326,11 @@ def _process_delete_daily_entry(record_id: int, customer_id: str = None):
                 target_cust_id = t.customer_id
                 break
 
-    success = sheets_client.delete_transaction(record_id)
+    success = await sheets_client.delete_transaction(record_id)
     if not success:
         raise HTTPException(status_code=404, detail="Record not found")
 
-    updated_customer = sheets_client.get_customer(target_cust_id, force_refresh=True) if target_cust_id else None
+    updated_customer = await sheets_client.get_customer(target_cust_id, force_refresh=True) if target_cust_id else None
 
     return {
         "message": "Record deleted successfully",
@@ -344,12 +344,12 @@ def _process_delete_daily_entry(record_id: int, customer_id: str = None):
 
 # ❌ Delete a specific date-wise record (by path)
 @router.delete("/customer/{customer_id}/record/{record_id}")
-def delete_daily_entry_by_customer_id(customer_id: str, record_id: int, db = Depends(get_db)):
+async def delete_daily_entry_by_customer_id(customer_id: str, record_id: int, db = Depends(get_db)):
     """
     Ek specific tarikhchi delivery record delete karto.
     """
     try:
-        return _process_delete_daily_entry(record_id, customer_id=customer_id)
+        return await _process_delete_daily_entry(record_id, customer_id=customer_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -358,12 +358,12 @@ def delete_daily_entry_by_customer_id(customer_id: str, record_id: int, db = Dep
 
 # ❌ Delete a specific date-wise record (by id)
 @router.delete("/record/{record_id}")
-def delete_daily_entry_by_id(record_id: int, db = Depends(get_db)):
+async def delete_daily_entry_by_id(record_id: int, db = Depends(get_db)):
     """
     Record ID varun delivery record delete karto.
     """
     try:
-        return _process_delete_daily_entry(record_id)
+        return await _process_delete_daily_entry(record_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -372,7 +372,7 @@ def delete_daily_entry_by_id(record_id: int, db = Depends(get_db)):
 
 # 📅 Get customer records DATE BY DATE (chronological order)
 @router.get("/customer/{customer_id}/records")
-def get_customer_records_by_date(
+async def get_customer_records_by_date(
     customer_id: str,
     from_date: str = None,   # Optional: filter from date (YYYY-MM-DD)
     to_date: str   = None,   # Optional: filter to date (YYYY-MM-DD)
@@ -391,7 +391,7 @@ def get_customer_records_by_date(
       GET /customer/{id}/records?from_date=2026-06-01&to_date=2026-06-30
     """
     try:
-        customer = sheets_client.get_customer(customer_id)
+        customer = await sheets_client.get_customer(customer_id)
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
@@ -487,10 +487,10 @@ def get_customer_records_by_date(
 
 # 📥 Download PDF — all customers included!
 @router.get("/download-pdf")
-def download_pdf(db = Depends(get_db)):
+async def download_pdf(db = Depends(get_db)):
     try:
         # 1. Fetch data
-        customers = get_all_customers(db, exclude_monthly=False)
+        customers = await get_all_customers(db, exclude_monthly=False)
         
         # 2. Create Buffer
         buffer = io.BytesIO()
@@ -550,7 +550,7 @@ def download_pdf(db = Depends(get_db)):
 
 # ❌ Delete customer
 @router.delete("/delete/{doc_id}")
-def delete(doc_id: str, db = Depends(get_db)):
-    delete_customer(doc_id, db)
+async def delete(doc_id: str, db = Depends(get_db)):
+    await delete_customer(doc_id, db)
     return {"message": "Customer deleted"}
 
