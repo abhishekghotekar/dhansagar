@@ -405,28 +405,31 @@ class GoogleSheetsClient:
             return []
             
         now_ts = time.time()
+        # Granular locking: only lock the cache check and Google Sheets fetch
         with sheets_lock:
             if not force_refresh and self._customers_cache and (now_ts - self._customers_cache[0] < self._cache_duration):
-                customers = self._customers_cache[1]
+                return list(self._customers_cache[1])
             else:
-                # Use get_all_values() instead of get_all_records() because
-                # get_all_records() silently STOPS at the first empty row,
-                # causing customers added after an empty row to be invisible.
                 all_values = self._retry(self.customers_sheet.get_all_values)
-                customers = []
-                if all_values:
-                    headers = all_values[0]  # First row = headers
-                    for idx, row in enumerate(all_values[1:]):  # Skip header row
-                        if not any(row):  # Skip fully empty rows
-                            continue
-                        # Pad row to header length if needed
-                        padded = row + [''] * (len(headers) - len(row))
-                        row_dict = dict(zip(headers, padded))
-                        if row_dict.get('id'):  # Only include rows with a valid ID
-                            cust = self._row_to_customer(row_dict)
-                            cust.row_idx = idx + 2
-                            customers.append(cust)
-                self._customers_cache = (now_ts, customers)
+        
+        # Release lock before parsing data
+        customers = []
+        if all_values:
+            headers = self.customer_headers # Always enforce our canonical headers
+                
+            for idx, row in enumerate(all_values[1:]):  # Skip header row
+                if not any(row):  # Skip fully empty rows
+                    continue
+                # Pad row to header length if needed
+                padded = row + [''] * (len(headers) - len(row))
+                row_dict = dict(zip(headers, padded))
+                if row_dict.get('id'):  # Only include rows with a valid ID
+                    cust = self._row_to_customer(row_dict)
+                    cust.row_idx = idx + 2
+                    customers.append(cust)
+                    
+        with sheets_lock:
+            self._customers_cache = (now_ts, customers)
             
         # Fetch and associate transactions for each customer
         txns = self.get_all_transactions(force_refresh=force_refresh)
@@ -517,9 +520,10 @@ class GoogleSheetsClient:
                 [row_values],
                 value_input_option="USER_ENTERED"
             )
-            # Full cache invalidation: ensures both mobiles get fresh data on next read
-            self._customers_cache = None
-            self._transactions_cache = None
+            customer.row_idx = next_row
+            # Targeted Cache Update
+            if self._customers_cache:
+                self._customers_cache[1].append(customer)
 
         # Create initial transaction log if jar count, paid, or pending is recorded
         if customer.jar or customer.paid or customer.pending:
@@ -588,9 +592,12 @@ class GoogleSheetsClient:
         
         with sheets_lock:
             self._retry(self.customers_sheet.update, f"A{row_idx}:M{row_idx}", [row_values])
-            # Full cache invalidation on update: ensures fresh data on next read for both mobiles
-            self._customers_cache = None
-            self._transactions_cache = None
+            # Targeted Cache Update
+            if self._customers_cache:
+                for i, c in enumerate(self._customers_cache[1]):
+                    if c.id == customer_id:
+                        self._customers_cache[1][i] = customer
+                        break
 
         # If transactions list is provided, synchronize it directly.
         # Otherwise, generate transaction log if differences exist.
@@ -672,9 +679,15 @@ class GoogleSheetsClient:
 
         with sheets_lock:
             self._retry(self.customers_sheet.delete_rows, row_idx)
-            # Full cache invalidation on delete: ensures fresh data on next read for both mobiles
-            self._customers_cache = None
-            self._transactions_cache = None
+            # Targeted Cache Update
+            if self._customers_cache:
+                new_list = []
+                for c in self._customers_cache[1]:
+                    if c.id != customer_id:
+                        if hasattr(c, 'row_idx') and c.row_idx and c.row_idx > row_idx:
+                            c.row_idx -= 1
+                        new_list.append(c)
+                self._customers_cache = (self._customers_cache[0], new_list)
 
         # Cascading delete transactions synchronously
         self.delete_transactions_by_customer(customer_id)
@@ -704,26 +717,30 @@ class GoogleSheetsClient:
             return []
 
         now_ts = time.time()
+        # Granular locking: only lock the cache check and Google Sheets fetch
         with sheets_lock:
             if not force_refresh and self._transactions_cache and (now_ts - self._transactions_cache[0] < self._cache_duration):
-                transactions = self._transactions_cache[1]
+                return list(self._transactions_cache[1])
             else:
-                # Use get_all_values() instead of get_all_records() — same fix
-                # as customers: avoids silent stop at empty rows.
                 all_values = self._retry(self.transactions_sheet.get_all_values)
-                transactions = []
-                if all_values:
-                    headers = all_values[0]
-                    for idx, row in enumerate(all_values[1:]):
-                        if not any(row):
-                            continue
-                        padded = row + [''] * (len(headers) - len(row))
-                        row_dict = dict(zip(headers, padded))
-                        if row_dict.get('id'):  # Only include rows with a valid ID
-                            txn = self._row_to_transaction(row_dict)
-                            txn.row_idx = idx + 2
-                            transactions.append(txn)
-                self._transactions_cache = (now_ts, transactions)
+                
+        # Release lock before parsing data
+        transactions = []
+        if all_values:
+            headers = self.transaction_headers # Always enforce our canonical headers
+                
+            for idx, row in enumerate(all_values[1:]):
+                if not any(row):
+                    continue
+                padded = row + [''] * (len(headers) - len(row))
+                row_dict = dict(zip(headers, padded))
+                if row_dict.get('id'):  # Only include rows with a valid ID
+                    txn = self._row_to_transaction(row_dict)
+                    txn.row_idx = idx + 2
+                    transactions.append(txn)
+                    
+        with sheets_lock:
+            self._transactions_cache = (now_ts, transactions)
 
         return list(transactions)
 
@@ -811,9 +828,10 @@ class GoogleSheetsClient:
                 [row_values],
                 value_input_option="USER_ENTERED"
             )
-            # Full cache invalidation on new transaction: ensures fresh data for both mobiles
-            self._customers_cache = None
-            self._transactions_cache = None
+            txn.row_idx = next_row
+            # Targeted Cache Update
+            if self._transactions_cache:
+                self._transactions_cache[1].append(txn)
 
         # Recalculate customer balances and sync customer's sheet synchronously
         self.recalculate_customer_balances(customer_id)
@@ -875,9 +893,13 @@ class GoogleSheetsClient:
         row_values = self._object_to_transaction_row(txn)
         with sheets_lock:
             self._retry(self.transactions_sheet.update, f"A{row_idx}:J{row_idx}", [row_values])
-            # Full cache invalidation on transaction update: ensures fresh data for both mobiles
-            self._customers_cache = None
-            self._transactions_cache = None
+            # Targeted Cache Update
+            if self._transactions_cache:
+                for i, t in enumerate(self._transactions_cache[1]):
+                    t_id = int(t.id) if str(t.id).isdigit() else t.id
+                    if t_id == txn_id:
+                        self._transactions_cache[1][i] = txn
+                        break
 
         # Recalculate customer balances and sync customer's sheet
         self.recalculate_customer_balances(txn.customer_id)
@@ -928,9 +950,16 @@ class GoogleSheetsClient:
 
         with sheets_lock:
             self._retry(self.transactions_sheet.delete_rows, row_idx)
-            # Full cache invalidation on transaction delete: ensures fresh data for both mobiles
-            self._customers_cache = None
-            self._transactions_cache = None
+            # Targeted Cache Update
+            if self._transactions_cache:
+                new_list = []
+                for t in self._transactions_cache[1]:
+                    t_id = int(t.id) if str(t.id).isdigit() else t.id
+                    if t_id != txn_id:
+                        if hasattr(t, 'row_idx') and t.row_idx and t.row_idx > row_idx:
+                            t.row_idx -= 1
+                        new_list.append(t)
+                self._transactions_cache = (self._transactions_cache[0], new_list)
 
         # Recalculate customer balances and sync customer's sheet
         if customer_id:
@@ -962,9 +991,16 @@ class GoogleSheetsClient:
         with sheets_lock:
             for r_idx in rows_to_delete:
                 self._retry(self.transactions_sheet.delete_rows, r_idx)
-            # Full cache invalidation: ensures fresh data for both mobiles
-            self._customers_cache = None
-            self._transactions_cache = None
+            # Targeted Cache Update
+            if self._transactions_cache:
+                new_list = []
+                for t in self._transactions_cache[1]:
+                    if t.customer_id != customer_id:
+                        if hasattr(t, 'row_idx') and t.row_idx:
+                            shift = sum(1 for r in rows_to_delete if r < t.row_idx)
+                            t.row_idx -= shift
+                        new_list.append(t)
+                self._transactions_cache = (self._transactions_cache[0], new_list)
 
         return True
 
@@ -1206,8 +1242,12 @@ class GoogleSheetsClient:
                     except Exception as e:
                         print(f"Error updating transaction row {r_idx}: {e}")
 
-        self._customers_cache = None
-        self._transactions_cache = None
+        # Targeted Cache Update for customers
+        if self._customers_cache:
+            for i, c in enumerate(self._customers_cache[1]):
+                if c.id == customer_id:
+                    self._customers_cache[1][i] = customer
+                    break
 
         self.sync_customer_sheet(customer_id)
 

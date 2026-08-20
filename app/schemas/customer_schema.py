@@ -21,6 +21,7 @@ class Customer(BaseModel):
     paid: Optional[float] = 0.0
     pending: Optional[float] = 0.0
     is_monthly: Optional[bool] = False
+    rate: Optional[float] = 25.0
     transactions: Optional[List[TransactionSchema]] = None
 
     class Config:
@@ -35,6 +36,7 @@ class CustomerUpdate(BaseModel):
     pending: float | None = None
     success: bool | None = None
     date: str | None = None
+    rate: float | None = None
     transactions: Optional[List[TransactionSchema]] = None
 
 class DailyEntryCreate(BaseModel):
