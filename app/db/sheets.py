@@ -3,9 +3,8 @@ import json
 import uuid
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import gspread
-import gspread_asyncio
 import asyncio
 from google.oauth2.service_account import Credentials
 from app.core.config import (
@@ -109,7 +108,7 @@ class CustomerObj:
 
 class TransactionObj:
     def __init__(self, **kwargs):
-        self.id = kwargs.get("id", 0)
+        self.id = str(kwargs.get("id", ""))
         self.customer_id = kwargs.get("customer_id", "")
         self.date = kwargs.get("date")
         self.jar_count = kwargs.get("jar_count", 0)
@@ -178,11 +177,9 @@ class GoogleSheetsClient:
         
         for attempt in range(max_retries):
             try:
-                if asyncio.iscoroutinefunction(func) or "gspread_asyncio" in str(type(func)):
-                    return await func(*args, **kwargs)
-                else:
-                    return await func(*args, **kwargs) # Assume all passed funcs are async
-            except Exception as e: # Catch all since gspread-asyncio wraps errors differently sometimes
+                # Execute the synchronous gspread call in a worker thread
+                return await asyncio.to_thread(func, *args, **kwargs)
+            except Exception as e:
                 status_code = getattr(getattr(e, "response", None), "status_code", None)
                 if status_code in [429, 500, 502, 503, 504] or "APIError" in str(type(e)):
                     if attempt < max_retries - 1:
@@ -237,8 +234,8 @@ class GoogleSheetsClient:
                     else:
                         raise Exception("Credentials not found")
 
-                self.agcm = gspread_asyncio.AsyncioGspreadClientManager(get_creds)
-                self.client = await self.agcm.authorize()
+                creds = get_creds()
+                self.client = await asyncio.to_thread(gspread.authorize, creds)
                 self.spreadsheet = await self._retry(self.client.open_by_key, sheet_id)
                 await self._ensure_worksheets()
                 
@@ -295,17 +292,27 @@ class GoogleSheetsClient:
             return None
         if isinstance(val, datetime):
             return val
+        
+        val_str = str(val).strip()
         try:
-            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+            return datetime.fromisoformat(val_str.replace("Z", "+00:00"))
         except ValueError:
+            pass
+            
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+            "%Y/%m/%d",
+            "%d-%m-%Y",
+            "%d/%m/%Y",
+            "%d-%m-%Y %H:%M:%S",
+            "%d/%m/%Y %H:%M:%S"
+        ):
             try:
-                # Try common formats
-                return datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
+                return datetime.strptime(val_str, fmt)
             except ValueError:
-                try:
-                    return datetime.strptime(val, "%Y-%m-%d")
-                except ValueError:
-                    return None
+                continue
+        return None
 
     def _row_to_customer(self, row_dict):
         try:
@@ -346,10 +353,7 @@ class GoogleSheetsClient:
         )
 
     def _row_to_transaction(self, row_dict):
-        try:
-            txn_id = int(row_dict.get("id", 0))
-        except:
-            txn_id = row_dict.get("id", 0)
+        txn_id = str(row_dict.get("id", ""))
         try:
             jar_count = int(row_dict.get("jar_count", 0))
         except:
@@ -367,6 +371,10 @@ class GoogleSheetsClient:
         except:
             manual_bill = 0.0
 
+        desc = str(row_dict.get("description", ""))
+        if desc in ["Initial Record", "Opening Balance"] and manual_bill == 0.0 and pending > 0.0:
+            manual_bill = pending
+
         return TransactionObj(
             id=txn_id,
             customer_id=str(row_dict.get("customer_id", "")),
@@ -375,7 +383,7 @@ class GoogleSheetsClient:
             amount=amount,
             pending=pending,
             manual_bill=manual_bill,
-            description=str(row_dict.get("description", "")),
+            description=desc,
             created_at=self._parse_datetime(row_dict.get("created_at")),
             updated_at=self._parse_datetime(row_dict.get("updated_at"))
         )
@@ -468,16 +476,17 @@ class GoogleSheetsClient:
                     raise Exception(f"Customer with phone number '{cust_num}' already exists (Name: {c.customer_name}). Use update instead.")
 
         doc_id = str(uuid.uuid4())
-        now = datetime.now()
+        now = datetime.now(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None)
 
-        # Handle Date Parsing
+        # Handle Date Parsing - normalize business date to midnight
         date_val = data.get("date")
         if not date_val:
-            parsed_date = now
+            parsed_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
         elif isinstance(date_val, datetime):
-            parsed_date = date_val
+            parsed_date = date_val.replace(hour=0, minute=0, second=0, microsecond=0)
         else:
             parsed_date = self._parse_datetime(date_val) or now
+            parsed_date = parsed_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
         # Extract jar, paid, pending, is_monthly from root or transactions
         jar_val = data.get("jar") or 0
@@ -574,7 +583,7 @@ class GoogleSheetsClient:
         # Track differences for Transactions
         old_jar = customer.jar
         old_paid = customer.paid
-        now = datetime.now()
+        now = datetime.now(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None)
 
         # Update values
         if "customer_name" in data: customer.customer_name = data["customer_name"]
@@ -589,9 +598,11 @@ class GoogleSheetsClient:
         
         if "date" in data and data["date"]:
             if isinstance(data["date"], datetime):
-                customer.date = data["date"]
+                customer.date = data["date"].replace(hour=0, minute=0, second=0, microsecond=0)
             else:
-                customer.date = self._parse_datetime(data["date"]) or customer.date
+                parsed_d = self._parse_datetime(data["date"])
+                if parsed_d:
+                    customer.date = parsed_d.replace(hour=0, minute=0, second=0, microsecond=0)
 
         customer.updated_at = now
 
@@ -643,6 +654,42 @@ class GoogleSheetsClient:
             else:
                 await self.sync_customer_sheet(customer_id)
         else:
+            # If jar, paid, or pending is being updated, we must update the "Initial Record" transaction
+            # so that recalculate_customer_balances doesn't overwrite our changes.
+            if "jar" in data or "paid" in data or "pending" in data:
+                txns = await self.get_transactions_by_customer(customer_id)
+                initial_txn = None
+                for t in txns:
+                    if t.description in ["Initial Record", "Opening Balance"]:
+                        initial_txn = t
+                        break
+                
+                if initial_txn:
+                    if "jar" in data:
+                        initial_txn.jar_count = int(data["jar"])
+                    if "paid" in data:
+                        initial_txn.amount = float(data["paid"])
+                    if "pending" in data:
+                        initial_txn.manual_bill = float(data["pending"])
+                        initial_txn.pending = float(data["pending"])
+                    
+                    initial_txn.updated_at = now
+                    row_vals = self._object_to_transaction_row(initial_txn)
+                    
+                    if hasattr(initial_txn, 'row_idx') and initial_txn.row_idx:
+                        async with sheets_lock:
+                            await self._retry(self.transactions_sheet.update, f"A{initial_txn.row_idx}:J{initial_txn.row_idx}", [row_vals])
+                else:
+                    # If no initial record was found, create one
+                    await self.add_transaction({
+                        "customer_id": customer_id,
+                        "date": customer.date or now,
+                        "jar_count": customer.jar,
+                        "amount": customer.paid,
+                        "pending": customer.pending,
+                        "description": "Initial Record"
+                    })
+
             # DO NOT create automatic transactions based on jar/paid differences.
             # Transactions should only be added explicitly via add_transaction endpoints.
             # Simply recalculate the correct balances from the existing true transaction records.
@@ -769,32 +816,24 @@ class GoogleSheetsClient:
         if not self.initialized:
             raise Exception("Google Sheets backend not initialized.")
 
-        txns = await self.get_all_transactions()
-        # Find next sequential ID safely
-        max_id = 0
-        for t in txns:
-            try:
-                tid = int(t.id)
-                if tid > max_id:
-                    max_id = tid
-            except (ValueError, TypeError):
-                pass
-        next_id = max_id + 1
+        next_id = str(uuid.uuid4())
 
-        now = datetime.now()
+        now = datetime.now(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None)
         date_val = data.get("date")
         if not date_val:
-            parsed_date = now
+            parsed_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
         elif isinstance(date_val, datetime):
-            parsed_date = date_val
+            parsed_date = date_val.replace(hour=0, minute=0, second=0, microsecond=0)
         else:
             parsed_date = self._parse_datetime(date_val) or now
+            parsed_date = parsed_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
         customer_id = data.get("customer_id", "")
         
         # Calculate/retrieve pending value (Direct Baki minus Jama calculation, no jar rate)
         pending_val = data.get("pending")
-        if data.get("description") in ["Initial Record", "Opening Balance"]:
+        desc = data.get("description", "")
+        if desc in ["Initial Record", "Opening Balance"]:
             try:
                 pending_val = float(pending_val or 0.0)
             except:
@@ -807,6 +846,10 @@ class GoogleSheetsClient:
             except:
                 pending_val = - float(data.get("amount", 0.0))
 
+        man_bill = float(data.get("manual_bill", 0.0))
+        if desc in ["Initial Record", "Opening Balance"]:
+            man_bill = pending_val
+
         txn = TransactionObj(
             id=next_id,
             customer_id=customer_id,
@@ -814,8 +857,8 @@ class GoogleSheetsClient:
             jar_count=int(data.get("jar_count", 0)),
             amount=float(data.get("amount", 0.0)),
             pending=pending_val,
-            manual_bill=float(data.get("manual_bill", 0.0)),
-            description=data.get("description", ""),
+            manual_bill=man_bill,
+            description=desc,
             created_at=now,
             updated_at=now
         )
@@ -844,7 +887,7 @@ class GoogleSheetsClient:
         await self.recalculate_customer_balances(customer_id)
         return txn
 
-    async def update_transaction(self, txn_id: int, data: dict):
+    async def update_transaction(self, txn_id: str, data: dict):
         await self.initialize()
         if not self.initialized:
             return None
@@ -853,11 +896,7 @@ class GoogleSheetsClient:
         txns = await self.get_all_transactions()
         txn = None
         for t in txns:
-            try:
-                curr_id = int(t.id)
-            except:
-                curr_id = t.id
-            if curr_id == txn_id:
+            if str(t.id) == str(txn_id):
                 txn = t
                 break
 
@@ -873,23 +912,21 @@ class GoogleSheetsClient:
 
             row_idx = -1
             for idx, tid in enumerate(id_list):
-                try:
-                    curr_id = int(tid)
-                except:
-                    curr_id = tid
-                if curr_id == txn_id:
+                if str(tid) == str(txn_id):
                     row_idx = idx + 1
                     break
 
         if row_idx == -1:
             return None
 
-        now = datetime.now()
+        now = datetime.now(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None)
         if "date" in data and data["date"]:
             if isinstance(data["date"], datetime):
-                txn.date = data["date"]
+                txn.date = data["date"].replace(hour=0, minute=0, second=0, microsecond=0)
             else:
-                txn.date = self._parse_datetime(data["date"]) or txn.date
+                parsed_d = self._parse_datetime(data["date"])
+                if parsed_d:
+                    txn.date = parsed_d.replace(hour=0, minute=0, second=0, microsecond=0)
         if "jar_count" in data: txn.jar_count = int(data["jar_count"])
         if "amount" in data: txn.amount = float(data["amount"])
         if "pending" in data: txn.pending = float(data["pending"])
@@ -913,7 +950,7 @@ class GoogleSheetsClient:
 
         return txn
 
-    async def delete_transaction(self, txn_id: int):
+    async def delete_transaction(self, txn_id: str):
         await self.initialize()
         if not self.initialized:
             return False
@@ -922,11 +959,7 @@ class GoogleSheetsClient:
         txns = await self.get_all_transactions()
         txn = None
         for t in txns:
-            try:
-                curr_id = int(t.id)
-            except:
-                curr_id = t.id
-            if curr_id == txn_id:
+            if str(t.id) == str(txn_id):
                 txn = t
                 break
 
@@ -944,11 +977,7 @@ class GoogleSheetsClient:
 
             row_idx = -1
             for idx, tid in enumerate(id_list):
-                try:
-                    curr_id = int(tid)
-                except:
-                    curr_id = tid
-                if curr_id == txn_id:
+                if str(tid) == str(txn_id):
                     row_idx = idx + 1
                     break
 
@@ -961,8 +990,7 @@ class GoogleSheetsClient:
             if self._transactions_cache:
                 new_list = []
                 for t in self._transactions_cache[1]:
-                    t_id = int(t.id) if str(t.id).isdigit() else t.id
-                    if t_id != txn_id:
+                    if str(t.id) != str(txn_id):
                         if hasattr(t, 'row_idx') and t.row_idx and t.row_idx > row_idx:
                             t.row_idx -= 1
                         new_list.append(t)
@@ -1016,7 +1044,7 @@ class GoogleSheetsClient:
         if not self.initialized:
             return False
 
-        now = datetime.now()
+        now = datetime.now(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None)
         
         # 1. Map client transactions to row values
         rows_to_add = []
@@ -1191,22 +1219,18 @@ class GoogleSheetsClient:
             if p_amt > 0:
                 total_paid += p_amt
 
-            # If jar_count > 0 and manual_bill is 0.0, fall back to jar_count * rate
-            m_bill = float(getattr(t, 'manual_bill', 0.0) or 0.0)
-            if j_cnt > 0 and m_bill == 0.0:
-                bill_amount = j_cnt * rate
-            else:
-                bill_amount = m_bill
+            # bill_amount is strictly the manual bill entered by the user
+            bill_amount = float(getattr(t, 'manual_bill', 0.0) or 0.0)
 
-            # If it's an initial balance record, preserve its pending amount as opening balance
+            # If it's an initial balance record, treat manual_bill or pending as the opening balance
             if getattr(t, 'description', '') in ["Initial Record", "Opening Balance"]:
-                net_change = float(getattr(t, 'pending', 0.0) or 0.0)
-            elif j_cnt == 0 and p_amt == 0 and float(getattr(t, 'pending', 0.0) or 0.0) > 0:
-                net_change = float(getattr(t, 'pending', 0.0) or 0.0)
+                opening_pending = float(getattr(t, 'manual_bill', 0.0) or getattr(t, 'pending', 0.0) or 0.0)
+                net_change = opening_pending - p_amt
             else:
                 net_change = bill_amount - p_amt
 
             running_baki += net_change
+            running_baki = max(0.0, running_baki)  # Never let outstanding balance go negative
             t.pending = running_baki
 
             if hasattr(t, 'row_idx') and t.row_idx:

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from app.schemas.customer_schema import Customer, CustomerCreate, DailyEntryCreate, DailyEntryUpdate
+from app.schemas.customer_schema import Customer, CustomerCreate, DailyEntryCreate, DailyEntryUpdate, CustomerUpdate
 from app.db.postgres import get_db
 from app.db.sheets import sheets_client
 from app.services.vector_service import (
@@ -49,7 +49,7 @@ async def add_customer(customer: CustomerCreate, db = Depends(get_db)):
 
 # ✏️ Update customer
 @router.put("/update/{doc_id}")
-async def update(doc_id: str, customer: Customer, db = Depends(get_db)):
+async def update(doc_id: str, customer: CustomerUpdate, db = Depends(get_db)):
     try:
         success = await update_customer(doc_id, customer.dict(exclude_unset=True), db)
         if not success:
@@ -112,7 +112,7 @@ async def get_customer_detail(customer_id: str, force_refresh: bool = False, db 
         for t in txns:
             delivery_records.append({
                 "id": str(t.id),
-                "date": safe_iso(t.date),
+                "date": safe_date_str(t.date),
                 "jar": t.jar_count,
                 "jama": t.amount,
                 "baki": t.manual_bill,
@@ -127,7 +127,7 @@ async def get_customer_detail(customer_id: str, force_refresh: bool = False, db 
             "customer_address": customer.customer_address,
             "customer_number": customer.customer_number,
             "success": customer.success,
-            "date": safe_iso(customer.date),
+            "date": safe_date_str(customer.date),
             "created_at": safe_iso(customer.created_at),
             "updated_at": safe_iso(customer.updated_at),
             "delivery_records": delivery_records,
@@ -196,8 +196,8 @@ async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate)
     txn = await sheets_client.add_transaction({
         "customer_id": target_cust_id,
         "date": entry.date,
-        "jar_count": entry.jar_count,
-        "amount": entry.amount,
+        "jar_count": entry.jar,
+        "amount": entry.paid,
         "manual_bill": entry.pending,
         "description": entry.description or "Daily Delivery"
     })
@@ -254,8 +254,12 @@ async def add_daily_entry_generic(entry: DailyEntryCreate, db = Depends(get_db))
         raise HTTPException(status_code=500, detail=f"Error adding entry: {str(e)}")
 
 
-async def _process_update_daily_entry(record_id: int, entry: DailyEntryUpdate, customer_id: str = None):
+async def _process_update_daily_entry(record_id: str, entry: DailyEntryUpdate, customer_id: str = None):
     update_dict = entry.dict(exclude_unset=True)
+    if "jar" in update_dict:
+        update_dict["jar_count"] = update_dict.pop("jar")
+    if "paid" in update_dict:
+        update_dict["amount"] = update_dict.pop("paid")
     if "pending" in update_dict:
         update_dict["manual_bill"] = update_dict.pop("pending")
     
@@ -287,7 +291,7 @@ async def _process_update_daily_entry(record_id: int, entry: DailyEntryUpdate, c
 
 # ✏️ Update a specific date-wise record (by path)
 @router.put("/customer/{customer_id}/record/{record_id}")
-async def update_daily_entry_by_customer_id(customer_id: str, record_id: int, entry: DailyEntryUpdate, db = Depends(get_db)):
+async def update_daily_entry_by_customer_id(customer_id: str, record_id: str, entry: DailyEntryUpdate, db = Depends(get_db)):
     """
     Ek specific tarikhchi delivery record update karto aani balance recalculate karto.
     """
@@ -301,7 +305,7 @@ async def update_daily_entry_by_customer_id(customer_id: str, record_id: int, en
 
 # ✏️ Update a specific date-wise record (by id)
 @router.put("/record/{record_id}")
-async def update_daily_entry_by_id(record_id: int, entry: DailyEntryUpdate, db = Depends(get_db)):
+async def update_daily_entry_by_id(record_id: str, entry: DailyEntryUpdate, db = Depends(get_db)):
     """
     Record ID varun delivery record update karto.
     """
@@ -313,16 +317,12 @@ async def update_daily_entry_by_id(record_id: int, entry: DailyEntryUpdate, db =
         raise HTTPException(status_code=500, detail=f"Error updating record: {str(e)}")
 
 
-async def _process_delete_daily_entry(record_id: int, customer_id: str = None):
+async def _process_delete_daily_entry(record_id: str, customer_id: str = None):
     target_cust_id = customer_id
     if not target_cust_id:
         txns = await sheets_client.get_all_transactions()
         for t in txns:
-            try:
-                curr_id = int(t.id)
-            except:
-                curr_id = t.id
-            if curr_id == record_id:
+            if str(t.id) == str(record_id):
                 target_cust_id = t.customer_id
                 break
 
@@ -344,7 +344,7 @@ async def _process_delete_daily_entry(record_id: int, customer_id: str = None):
 
 # ❌ Delete a specific date-wise record (by path)
 @router.delete("/customer/{customer_id}/record/{record_id}")
-async def delete_daily_entry_by_customer_id(customer_id: str, record_id: int, db = Depends(get_db)):
+async def delete_daily_entry_by_customer_id(customer_id: str, record_id: str, db = Depends(get_db)):
     """
     Ek specific tarikhchi delivery record delete karto.
     """
@@ -358,7 +358,7 @@ async def delete_daily_entry_by_customer_id(customer_id: str, record_id: int, db
 
 # ❌ Delete a specific date-wise record (by id)
 @router.delete("/record/{record_id}")
-async def delete_daily_entry_by_id(record_id: int, db = Depends(get_db)):
+async def delete_daily_entry_by_id(record_id: str, db = Depends(get_db)):
     """
     Record ID varun delivery record delete karto.
     """

@@ -20,9 +20,9 @@ class CustomerCreate(BaseModel):
     jar: Optional[int] = 0
     paid: Optional[float] = 0.0
     pending: Optional[float] = 0.0
-    rate: Optional[float] = 25.0
 
 class Customer(CustomerCreate):
+    rate: Optional[float] = 25.0
     transactions: Optional[List[TransactionSchema]] = None
 
     class Config:
@@ -43,15 +43,15 @@ class CustomerUpdate(BaseModel):
 class DailyEntryCreate(BaseModel):
     customer_id: Optional[str] = None
     date: Optional[str] = None
-    jar_count: int = Field(0, description="Delivered jar count")
-    amount: float = Field(0.0, description="Amount paid / Jama")
+    jar: int = Field(0, description="Delivered jar count")
+    paid: float = Field(0.0, description="Amount paid / Jama")
     pending: float = Field(0.0, description="Manual pending amount (Bill)")
     description: Optional[str] = "Delivery"
 
 class DailyEntryUpdate(BaseModel):
     date: Optional[str] = None
-    jar_count: Optional[int] = None
-    amount: Optional[float] = None
+    jar: Optional[int] = None
+    paid: Optional[float] = None
     pending: Optional[float] = None
     description: Optional[str] = None
 

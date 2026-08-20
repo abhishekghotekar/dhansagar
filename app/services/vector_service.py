@@ -33,6 +33,13 @@ def safe_iso(val):
         return val.isoformat()
     return str(val)
 
+def safe_date_str(val, fmt="%Y-%m-%d"):
+    if not val:
+        return ""
+    if isinstance(val, datetime):
+        return val.strftime(fmt)
+    return str(val)
+
 # 🔍 Search customer in Google Sheets
 async def search_customer(query: str, db=None):
     res = await sheets_client.search_customers(query)
@@ -42,7 +49,7 @@ async def search_customer(query: str, db=None):
         for t in customer.transactions:
             formatted_txns.append({
                 "id": str(t.id),
-                "date": safe_iso(t.date) or "",
+                "date": safe_date_str(t.date) or "",
                 "jar": t.jar_count,
                 "paid": t.amount,
                 "pending": t.pending
@@ -56,7 +63,7 @@ async def search_customer(query: str, db=None):
             "paid": customer.paid,
             "pending": customer.pending,
             "success": customer.success,
-            "date": safe_iso(customer.date),
+            "date": safe_date_str(customer.date),
             "is_monthly": customer.is_monthly,
             "created_at": safe_iso(customer.created_at),
             "updated_at": safe_iso(customer.updated_at),
