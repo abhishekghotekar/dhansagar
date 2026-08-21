@@ -10,7 +10,7 @@ from app.services.vector_service import (
     get_all_customers,
     delete_customer
 )
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import io
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
@@ -187,26 +187,65 @@ async def refresh_data(db = Depends(get_db)):
 
 async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate):
     if not target_cust_id:
+        target_cust_id = entry.customer_id
+    if not target_cust_id:
         raise HTTPException(status_code=400, detail="Customer ID is required")
 
     customer = await sheets_client.get_customer(target_cust_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    txn = await sheets_client.add_transaction({
-        "customer_id": target_cust_id,
-        "date": entry.date,
-        "jar_count": entry.jar,
-        "amount": entry.paid,
-        "manual_bill": entry.pending,
-        "description": entry.description or "Daily Delivery"
-    })
+    # Upsert check: Check if an entry already exists for this customer on this date
+    # or if entry.record_id matches an existing transaction ID.
+    now_iso = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d")
+    target_date_str = entry.date or now_iso
+    target_date_clean = target_date_str.split("T")[0].split(" ")[0].strip() if target_date_str else ""
+
+    existing_txn = None
+    all_cust_txns = await sheets_client.get_transactions_by_customer(target_cust_id)
+
+    if getattr(entry, "record_id", None):
+        for t in all_cust_txns:
+            if str(t.id) == str(entry.record_id):
+                existing_txn = t
+                break
+
+    if not existing_txn and target_date_clean:
+        for t in all_cust_txns:
+            if t.date:
+                t_date_str = t.date.strftime("%Y-%m-%d") if isinstance(t.date, datetime) else str(t.date).split("T")[0].split(" ")[0].strip()
+                if t_date_str == target_date_clean:
+                    existing_txn = t
+                    break
+
+    if existing_txn:
+        # Update existing record for this date / record_id
+        update_data = {
+            "date": entry.date or safe_iso(existing_txn.date),
+            "jar_count": entry.jar,
+            "amount": entry.paid,
+            "manual_bill": entry.pending,
+            "description": entry.description or existing_txn.description or "Daily Delivery"
+        }
+        txn = await sheets_client.update_transaction(str(existing_txn.id), update_data)
+        message = "Daily entry updated successfully"
+    else:
+        # Create new transaction
+        txn = await sheets_client.add_transaction({
+            "customer_id": target_cust_id,
+            "date": entry.date,
+            "jar_count": entry.jar,
+            "amount": entry.paid,
+            "manual_bill": entry.pending,
+            "description": entry.description or "Daily Delivery"
+        })
+        message = "Daily entry added successfully"
 
     # Fetch updated customer summary
     updated_customer = await sheets_client.get_customer(target_cust_id, force_refresh=True)
 
     return {
-        "message": "Daily entry added successfully",
+        "message": message,
         "record": {
             "id": str(txn.id),
             "date": safe_iso(txn.date),
@@ -214,7 +253,8 @@ async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate)
             "jama": txn.amount,
             "baki": txn.manual_bill,
             "description": txn.description or "",
-            "created_at": safe_iso(txn.created_at)
+            "created_at": safe_iso(getattr(txn, "created_at", None)),
+            "updated_at": safe_iso(getattr(txn, "updated_at", None))
         },
         "customer_summary": {
             "total_jars": updated_customer.jar if updated_customer else 0,
@@ -224,51 +264,71 @@ async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate)
     }
 
 
-# ➕ Add daily date-wise entry (by path)
+# ➕ Add daily date-wise entry (by path or body, upsert supported)
 @router.post("/customer/{customer_id}/add-entry")
 @router.post("/customer/{customer_id}/add-record")
+@router.post("/customer/{customer_id}/update-entry")
+@router.put("/customer/{customer_id}/update-entry")
 async def add_daily_entry_by_customer_id(customer_id: str, entry: DailyEntryCreate, db = Depends(get_db)):
     """
-    Tarikh-wise jar delivery aani jama (paid amount) chi entry add karto (via path customer_id).
+    Tarikh-wise jar delivery aani jama (paid amount) chi entry add kiwa update karto (via path customer_id).
     """
     try:
         return await _process_add_daily_entry(customer_id, entry)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding entry: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing entry: {str(e)}")
 
 
-# ➕ Add daily date-wise entry (by body)
+# ➕ Add / Update daily date-wise entry (by body)
 @router.post("/add-entry")
 @router.post("/add-record")
+@router.post("/update-entry")
+@router.put("/update-entry")
 async def add_daily_entry_generic(entry: DailyEntryCreate, db = Depends(get_db)):
     """
-    Body madhil customer_id varun entry add karto.
+    Body madhil customer_id varun entry add kiwa update karto.
     """
     try:
         return await _process_add_daily_entry(entry.customer_id, entry)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding entry: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing entry: {str(e)}")
 
 
 async def _process_update_daily_entry(record_id: str, entry: DailyEntryUpdate, customer_id: str = None):
     update_dict = entry.dict(exclude_unset=True)
-    if "jar" in update_dict:
+    if "jar" in update_dict and update_dict["jar"] is not None:
         update_dict["jar_count"] = update_dict.pop("jar")
-    if "paid" in update_dict:
+    if "paid" in update_dict and update_dict["paid"] is not None:
         update_dict["amount"] = update_dict.pop("paid")
-    if "pending" in update_dict:
+    if "pending" in update_dict and update_dict["pending"] is not None:
         update_dict["manual_bill"] = update_dict.pop("pending")
     
-    txn = await sheets_client.update_transaction(record_id, update_dict)
+    target_cust_id = customer_id or entry.customer_id
+    target_rec_id = record_id or entry.record_id
+
+    txn = None
+    if target_rec_id and target_rec_id != "auto":
+        txn = await sheets_client.update_transaction(target_rec_id, update_dict)
+    
+    if not txn and target_cust_id and entry.date:
+        target_date_clean = entry.date.split("T")[0].split(" ")[0].strip()
+        all_cust_txns = await sheets_client.get_transactions_by_customer(target_cust_id)
+        for t in all_cust_txns:
+            if t.date:
+                t_date_str = t.date.strftime("%Y-%m-%d") if isinstance(t.date, datetime) else str(t.date).split("T")[0].split(" ")[0].strip()
+                if t_date_str == target_date_clean:
+                    txn = await sheets_client.update_transaction(str(t.id), update_dict)
+                    break
+
     if not txn:
         raise HTTPException(status_code=404, detail="Record not found")
 
-    target_cust_id = txn.customer_id or customer_id
-    updated_customer = await sheets_client.get_customer(target_cust_id, force_refresh=True) if target_cust_id else None
+    final_cust_id = txn.customer_id or target_cust_id
+    updated_customer = await sheets_client.get_customer(final_cust_id, force_refresh=True) if final_cust_id else None
 
     return {
         "message": "Record updated successfully",

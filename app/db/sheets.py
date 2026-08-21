@@ -940,8 +940,7 @@ class GoogleSheetsClient:
             # Targeted Cache Update
             if self._transactions_cache:
                 for i, t in enumerate(self._transactions_cache[1]):
-                    t_id = int(t.id) if str(t.id).isdigit() else t.id
-                    if t_id == txn_id:
+                    if str(t.id) == str(txn_id):
                         self._transactions_cache[1][i] = txn
                         break
 

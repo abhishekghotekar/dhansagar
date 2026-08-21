@@ -42,6 +42,7 @@ class CustomerUpdate(BaseModel):
 
 class DailyEntryCreate(BaseModel):
     customer_id: Optional[str] = None
+    record_id: Optional[str] = None
     date: Optional[str] = None
     jar: int = Field(0, description="Delivered jar count")
     paid: float = Field(0.0, description="Amount paid / Jama")
@@ -49,6 +50,8 @@ class DailyEntryCreate(BaseModel):
     description: Optional[str] = "Delivery"
 
 class DailyEntryUpdate(BaseModel):
+    record_id: Optional[str] = None
+    customer_id: Optional[str] = None
     date: Optional[str] = None
     jar: Optional[int] = None
     paid: Optional[float] = None
