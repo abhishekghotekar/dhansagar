@@ -609,7 +609,12 @@ class GoogleSheetsClient:
         row_values = self._object_to_customer_row(customer)
         
         async with sheets_lock:
-            await self._retry(self.customers_sheet.update, f"A{row_idx}:M{row_idx}", [row_values])
+            await self._retry(
+                self.customers_sheet.update,
+                f"A{row_idx}:M{row_idx}",
+                [row_values],
+                value_input_option="USER_ENTERED"
+            )
             # Targeted Cache Update
             if self._customers_cache:
                 for i, c in enumerate(self._customers_cache[1]):

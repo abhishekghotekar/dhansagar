@@ -56,6 +56,8 @@ async def update(doc_id: str, customer: CustomerUpdate, db = Depends(get_db)):
             raise HTTPException(status_code=404, detail="Customer not found")
         
         return {"message": "Customer updated successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -611,6 +613,13 @@ async def download_pdf(db = Depends(get_db)):
 # ❌ Delete customer
 @router.delete("/delete/{doc_id}")
 async def delete(doc_id: str, db = Depends(get_db)):
-    await delete_customer(doc_id, db)
-    return {"message": "Customer deleted"}
+    try:
+        success = await delete_customer(doc_id, db)
+        if not success:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        return {"message": "Customer deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
