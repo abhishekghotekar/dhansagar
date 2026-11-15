@@ -188,19 +188,30 @@ async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate)
                 existing_txn = t
                 break
 
-    # 2. Match by date ONLY if it's NOT an opening balance / Initial Record
+    # 2. Match by date — find any existing record for this date
+    has_initial_on_date = False  # track if Initial Record exists on target date
     if not existing_txn and target_date_clean:
         for t in all_cust_txns:
             desc = (t.description or "").strip()
-            # NEVER overwrite the initial opening balance record
-            if desc in ["Initial Record", "Opening Balance"]:
-                continue
             if t.date:
                 t_date_str = t.date.strftime("%Y-%m-%d") if isinstance(t.date, datetime) else str(t.date).split("T")[0].split(" ")[0].strip()
                 if t_date_str == target_date_clean:
-                    existing_txn = t
-                    break
+                    if desc in ["Initial Record", "Opening Balance"]:
+                        # Remember there is an initial record on this date
+                        has_initial_on_date = True
+                        # If the client explicitly wants to edit this record by date, let them
+                        # (only if entry description is also an initial-type)
+                        req_desc = (entry.description or "").strip()
+                        if req_desc in ["Initial Record", "Opening Balance"]:
+                            existing_txn = t
+                        # else: do NOT overwrite initial record with a delivery log
+                    else:
+                        existing_txn = t
+                    if existing_txn:
+                        break
 
+    # 3. If the only record on target_date is an Initial Record and we're adding a Delivery Log,
+    #    treat it as a NEW entry (don't overwrite), BUT check for idempotency in add_transaction
     if existing_txn:
         update_data = {
             "date": entry.date or safe_iso(existing_txn.date),

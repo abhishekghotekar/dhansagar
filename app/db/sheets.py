@@ -1,7 +1,6 @@
 import os
 import json
 import uuid
-import threading
 import time
 from datetime import datetime, timezone, timedelta
 import gspread
@@ -571,6 +570,7 @@ class GoogleSheetsClient:
         self._invalidate_customers_cache()
 
         # Create opening transaction log if initial balance/jar count is recorded
+        # add_transaction() has idempotency guard so double-calls are safe
         if jar_val > 0 or paid_val > 0 or pending_val > 0:
             await self.add_transaction({
                 "customer_id": doc_id,
@@ -781,6 +781,29 @@ class GoogleSheetsClient:
         amount = float(data.get("amount") or data.get("paid") or 0.0)
         manual_bill = float(data.get("manual_bill") or data.get("pending") or 0.0)
         desc = str(data.get("description", "Daily Delivery")).strip()
+
+        # ---- IDEMPOTENCY GUARD: prevent duplicate transactions ----
+        # For "Initial Record"/"Opening Balance" check by customer_id + description only (one per customer)
+        # For other entries: check by customer_id + date + description
+        if customer_id:
+            existing_txns = await self.get_all_transactions()
+            parsed_date_str = parsed_date.strftime("%Y-%m-%d")
+            for t in existing_txns:
+                if t.customer_id != customer_id:
+                    continue
+                t_date_str = t.date.strftime("%Y-%m-%d") if isinstance(t.date, datetime) else ""
+                t_desc = (t.description or "").strip()
+                if desc in ["Initial Record", "Opening Balance"]:
+                    # Only one opening record allowed per customer
+                    if t_desc in ["Initial Record", "Opening Balance"]:
+                        print(f"[IDEMPOTENCY] Skipping duplicate {desc} for customer {customer_id}")
+                        return t
+                else:
+                    # Same date + same description = duplicate
+                    if t_date_str == parsed_date_str and t_desc == desc:
+                        print(f"[IDEMPOTENCY] Skipping duplicate transaction on {parsed_date_str} ({desc}) for customer {customer_id}")
+                        return t
+        # ----------------------------------------------------------
 
         txn = TransactionObj(
             id=next_id,
