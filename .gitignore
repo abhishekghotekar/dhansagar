@@ -8,6 +8,11 @@ venv/
 env/
 .env
 
+# Credentials & Secrets
+google-credentials.json
+*credentials*.json
+service_account*.json
+
 # MacOS
 .DS_Store
 

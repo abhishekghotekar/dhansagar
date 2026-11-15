@@ -1,7 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from app.schemas.customer_schema import Customer, CustomerCreate, DailyEntryCreate, DailyEntryUpdate, CustomerUpdate
-from app.db.postgres import get_db
 from app.db.sheets import sheets_client
 from app.services.vector_service import (
     store_customer,
@@ -36,9 +35,10 @@ def safe_date_str(val, fmt="%Y-%m-%d"):
 
 # 🟢 Store customer
 @router.post("/add-customer")
-async def add_customer(customer: CustomerCreate, db = Depends(get_db)):
+async def add_customer(customer: CustomerCreate):
     try:
-        doc_id = await store_customer(customer.dict(), db)
+        data = customer.model_dump() if hasattr(customer, "model_dump") else customer.dict()
+        doc_id = await store_customer(data)
         return {
             "message": "Customer stored successfully",
             "id": doc_id
@@ -49,9 +49,10 @@ async def add_customer(customer: CustomerCreate, db = Depends(get_db)):
 
 # ✏️ Update customer
 @router.put("/update/{doc_id}")
-async def update(doc_id: str, customer: CustomerUpdate, db = Depends(get_db)):
+async def update(doc_id: str, customer: CustomerUpdate):
     try:
-        success = await update_customer(doc_id, customer.dict(exclude_unset=True), db)
+        data = customer.model_dump(exclude_unset=True) if hasattr(customer, "model_dump") else customer.dict(exclude_unset=True)
+        success = await update_customer(doc_id, data)
         if not success:
             raise HTTPException(status_code=404, detail="Customer not found")
         
@@ -62,42 +63,37 @@ async def update(doc_id: str, customer: CustomerUpdate, db = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# 🔍 Search customer (AI search)
+# 🔍 Search customer
 @router.get("/search")
-async def search(q: str, db = Depends(get_db)):
+async def search(q: str):
     if not q:
         return []
-    results = await search_customer(q, db)
+    results = await search_customer(q)
     return results
 
 
-# 📄 Get all customers — Monthly customers included!
+# 📄 Get all customers
 @router.get("/all-customers")
-async def get_all(force_refresh: bool = False, db = Depends(get_db)):
-    data = await get_all_customers(db, exclude_monthly=False, force_refresh=force_refresh)
+async def get_all(force_refresh: bool = False):
+    data = await get_all_customers(exclude_monthly=False, force_refresh=force_refresh)
     return [c.dict() for c in data]
 
 
-# 👤 Get single customer detail — all customers included
+# 👤 Get single customer detail
 @router.get("/customer/{customer_id}")
-async def get_customer_detail(customer_id: str, force_refresh: bool = False, db = Depends(get_db)):
+async def get_customer_detail(customer_id: str, force_refresh: bool = False):
     try:
         if force_refresh:
             sheets_client._invalidate_customers_cache()
             sheets_client._invalidate_transactions_cache()
 
-        customer = await sheets_client.get_customer(customer_id)
+        customer = await sheets_client.get_customer(customer_id, force_refresh=force_refresh)
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        # Sort stably by date and ID (latest first)
         def safe_sort_key(t):
-            try:
-                tid = int(t.id)
-            except:
-                tid = 0
-            t_dt = t.date if isinstance(t.date, datetime) else datetime.min
-            return (t_dt, tid)
+            return t.date if isinstance(t.date, datetime) else datetime.min
+
         txns = sorted(
             customer.transactions,
             key=safe_sort_key,
@@ -107,7 +103,6 @@ async def get_customer_detail(customer_id: str, force_refresh: bool = False, db 
         rate = getattr(customer, 'rate', 25.0) or 25.0
         total_jars = sum(t.jar_count for t in txns)
         total_paid = sum(t.amount for t in txns if t.amount > 0)
-        total_pending = customer.pending
         total_cost = total_jars * rate
 
         delivery_records = []
@@ -117,7 +112,10 @@ async def get_customer_detail(customer_id: str, force_refresh: bool = False, db 
                 "date": safe_date_str(t.date),
                 "jar": t.jar_count,
                 "jama": t.amount,
+                "paid": t.amount,
                 "baki": t.manual_bill,
+                "pending": t.manual_bill,
+                "running_balance": t.pending,
                 "description": t.description or "",
                 "created_at": safe_iso(t.created_at),
                 "updated_at": safe_iso(t.updated_at)
@@ -128,6 +126,7 @@ async def get_customer_detail(customer_id: str, force_refresh: bool = False, db 
             "customer_name": customer.customer_name,
             "customer_address": customer.customer_address,
             "customer_number": customer.customer_number,
+            "rate": rate,
             "success": customer.success,
             "date": safe_date_str(customer.date),
             "created_at": safe_iso(customer.created_at),
@@ -146,38 +145,16 @@ async def get_customer_detail(customer_id: str, force_refresh: bool = False, db 
         raise HTTPException(status_code=500, detail=f"Error fetching customer: {str(e)}")
 
 
-# 🔄 Refresh: Cache invalidate karo aani Google Sheets madhun ALL data with full history fetch karo
+# 🔄 Refresh data from Google Sheets
 @router.get("/refresh")
-async def refresh_data(db = Depends(get_db)):
-    """
-    Memory cache clear karto aani Google Sheets madhun saglya customers chi
-    full history (transactions sahit) fetch karto.
-    Reload kelyanavar fresh latest data milato.
-    """
+async def refresh_data():
     try:
-        # 1. Cache completely invalidate karo
         sheets_client._invalidate_customers_cache()
         sheets_client._invalidate_transactions_cache()
 
-        # 2. Force refresh - ALL customers + their transactions fresh fetch
-        all_customers = await get_all_customers(db, exclude_monthly=False, force_refresh=True)
+        all_customers = await get_all_customers(exclude_monthly=False, force_refresh=True)
 
-        # 3. Recalculate balances to ensure Jama is properly subtracted from Baki
-        for c in all_customers:
-            try:
-                await sheets_client.recalculate_customer_balances(c.id)
-            except Exception as e:
-                print(f"Error recalculating customer balance for {c.id}: {e}")
-
-        # Fetch updated customers list after recalculating
-        all_customers = await get_all_customers(db, exclude_monthly=False, force_refresh=True)
-
-        # 4. Pratek customer chi complete history (transactions sahit) return karo
-        result = []
-        for c in all_customers:
-            customer_dict = c.dict()  # transactions already included via CustomerObj.dict()
-            result.append(customer_dict)
-
+        result = [c.dict() for c in all_customers]
         return {
             "message": "All customer data with full history refreshed from Google Sheets",
             "total_customers": len(result),
@@ -197,8 +174,6 @@ async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    # Upsert check: Check if an entry already exists for this customer on this date
-    # or if entry.record_id matches an existing transaction ID.
     now_iso = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d")
     target_date_str = entry.date or now_iso
     target_date_clean = target_date_str.split("T")[0].split(" ")[0].strip() if target_date_str else ""
@@ -206,14 +181,20 @@ async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate)
     existing_txn = None
     all_cust_txns = await sheets_client.get_transactions_by_customer(target_cust_id)
 
+    # 1. Match by explicit record_id if provided
     if getattr(entry, "record_id", None):
         for t in all_cust_txns:
-            if str(t.id) == str(entry.record_id):
+            if str(t.id).strip() == str(entry.record_id).strip():
                 existing_txn = t
                 break
 
+    # 2. Match by date ONLY if it's NOT an opening balance / Initial Record
     if not existing_txn and target_date_clean:
         for t in all_cust_txns:
+            desc = (t.description or "").strip()
+            # NEVER overwrite the initial opening balance record
+            if desc in ["Initial Record", "Opening Balance"]:
+                continue
             if t.date:
                 t_date_str = t.date.strftime("%Y-%m-%d") if isinstance(t.date, datetime) else str(t.date).split("T")[0].split(" ")[0].strip()
                 if t_date_str == target_date_clean:
@@ -221,7 +202,6 @@ async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate)
                     break
 
     if existing_txn:
-        # Update existing record for this date / record_id
         update_data = {
             "date": entry.date or safe_iso(existing_txn.date),
             "jar_count": entry.jar,
@@ -232,7 +212,6 @@ async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate)
         txn = await sheets_client.update_transaction(str(existing_txn.id), update_data)
         message = "Daily entry updated successfully"
     else:
-        # Create new transaction
         txn = await sheets_client.add_transaction({
             "customer_id": target_cust_id,
             "date": entry.date,
@@ -243,7 +222,6 @@ async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate)
         })
         message = "Daily entry added successfully"
 
-    # Fetch updated customer summary
     updated_customer = await sheets_client.get_customer(target_cust_id, force_refresh=True)
 
     return {
@@ -253,7 +231,10 @@ async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate)
             "date": safe_iso(txn.date),
             "jar": txn.jar_count,
             "jama": txn.amount,
+            "paid": txn.amount,
             "baki": txn.manual_bill,
+            "pending": txn.manual_bill,
+            "running_balance": txn.pending,
             "description": txn.description or "",
             "created_at": safe_iso(getattr(txn, "created_at", None)),
             "updated_at": safe_iso(getattr(txn, "updated_at", None))
@@ -266,15 +247,12 @@ async def _process_add_daily_entry(target_cust_id: str, entry: DailyEntryCreate)
     }
 
 
-# ➕ Add daily date-wise entry (by path or body, upsert supported)
+# ➕ Add / Update daily entry (by path)
 @router.post("/customer/{customer_id}/add-entry")
 @router.post("/customer/{customer_id}/add-record")
 @router.post("/customer/{customer_id}/update-entry")
 @router.put("/customer/{customer_id}/update-entry")
-async def add_daily_entry_by_customer_id(customer_id: str, entry: DailyEntryCreate, db = Depends(get_db)):
-    """
-    Tarikh-wise jar delivery aani jama (paid amount) chi entry add kiwa update karto (via path customer_id).
-    """
+async def add_daily_entry_by_customer_id(customer_id: str, entry: DailyEntryCreate):
     try:
         return await _process_add_daily_entry(customer_id, entry)
     except HTTPException:
@@ -283,15 +261,12 @@ async def add_daily_entry_by_customer_id(customer_id: str, entry: DailyEntryCrea
         raise HTTPException(status_code=500, detail=f"Error processing entry: {str(e)}")
 
 
-# ➕ Add / Update daily date-wise entry (by body)
+# ➕ Add / Update daily entry (by body)
 @router.post("/add-entry")
 @router.post("/add-record")
 @router.post("/update-entry")
 @router.put("/update-entry")
-async def add_daily_entry_generic(entry: DailyEntryCreate, db = Depends(get_db)):
-    """
-    Body madhil customer_id varun entry add kiwa update karto.
-    """
+async def add_daily_entry_generic(entry: DailyEntryCreate):
     try:
         return await _process_add_daily_entry(entry.customer_id, entry)
     except HTTPException:
@@ -301,7 +276,7 @@ async def add_daily_entry_generic(entry: DailyEntryCreate, db = Depends(get_db))
 
 
 async def _process_update_daily_entry(record_id: str, entry: DailyEntryUpdate, customer_id: str = None):
-    update_dict = entry.dict(exclude_unset=True)
+    update_dict = entry.model_dump(exclude_unset=True) if hasattr(entry, "model_dump") else entry.dict(exclude_unset=True)
     if "jar" in update_dict and update_dict["jar"] is not None:
         update_dict["jar_count"] = update_dict.pop("jar")
     if "paid" in update_dict and update_dict["paid"] is not None:
@@ -339,7 +314,10 @@ async def _process_update_daily_entry(record_id: str, entry: DailyEntryUpdate, c
             "date": safe_iso(txn.date),
             "jar": txn.jar_count,
             "jama": txn.amount,
+            "paid": txn.amount,
             "baki": txn.manual_bill,
+            "pending": txn.manual_bill,
+            "running_balance": txn.pending,
             "description": txn.description or "",
             "updated_at": safe_iso(txn.updated_at)
         },
@@ -353,10 +331,7 @@ async def _process_update_daily_entry(record_id: str, entry: DailyEntryUpdate, c
 
 # ✏️ Update a specific date-wise record (by path)
 @router.put("/customer/{customer_id}/record/{record_id}")
-async def update_daily_entry_by_customer_id(customer_id: str, record_id: str, entry: DailyEntryUpdate, db = Depends(get_db)):
-    """
-    Ek specific tarikhchi delivery record update karto aani balance recalculate karto.
-    """
+async def update_daily_entry_by_customer_id(customer_id: str, record_id: str, entry: DailyEntryUpdate):
     try:
         return await _process_update_daily_entry(record_id, entry, customer_id=customer_id)
     except HTTPException:
@@ -367,10 +342,7 @@ async def update_daily_entry_by_customer_id(customer_id: str, record_id: str, en
 
 # ✏️ Update a specific date-wise record (by id)
 @router.put("/record/{record_id}")
-async def update_daily_entry_by_id(record_id: str, entry: DailyEntryUpdate, db = Depends(get_db)):
-    """
-    Record ID varun delivery record update karto.
-    """
+async def update_daily_entry_by_id(record_id: str, entry: DailyEntryUpdate):
     try:
         return await _process_update_daily_entry(record_id, entry)
     except HTTPException:
@@ -384,7 +356,7 @@ async def _process_delete_daily_entry(record_id: str, customer_id: str = None):
     if not target_cust_id:
         txns = await sheets_client.get_all_transactions()
         for t in txns:
-            if str(t.id) == str(record_id):
+            if str(t.id).strip() == str(record_id).strip():
                 target_cust_id = t.customer_id
                 break
 
@@ -406,10 +378,7 @@ async def _process_delete_daily_entry(record_id: str, customer_id: str = None):
 
 # ❌ Delete a specific date-wise record (by path)
 @router.delete("/customer/{customer_id}/record/{record_id}")
-async def delete_daily_entry_by_customer_id(customer_id: str, record_id: str, db = Depends(get_db)):
-    """
-    Ek specific tarikhchi delivery record delete karto.
-    """
+async def delete_daily_entry_by_customer_id(customer_id: str, record_id: str):
     try:
         return await _process_delete_daily_entry(record_id, customer_id=customer_id)
     except HTTPException:
@@ -420,10 +389,7 @@ async def delete_daily_entry_by_customer_id(customer_id: str, record_id: str, db
 
 # ❌ Delete a specific date-wise record (by id)
 @router.delete("/record/{record_id}")
-async def delete_daily_entry_by_id(record_id: str, db = Depends(get_db)):
-    """
-    Record ID varun delivery record delete karto.
-    """
+async def delete_daily_entry_by_id(record_id: str):
     try:
         return await _process_delete_daily_entry(record_id)
     except HTTPException:
@@ -432,26 +398,14 @@ async def delete_daily_entry_by_id(record_id: str, db = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error deleting record: {str(e)}")
 
 
-# 📅 Get customer records DATE BY DATE (chronological order)
+# 📅 Get customer records DATE BY DATE
 @router.get("/customer/{customer_id}/records")
 async def get_customer_records_by_date(
     customer_id: str,
-    from_date: str = None,   # Optional: filter from date (YYYY-MM-DD)
-    to_date: str   = None,   # Optional: filter to date (YYYY-MM-DD)
-    order: str     = "desc", # "asc" = oldest first, "desc" = latest first
-    db = Depends(get_db)
+    from_date: str = None,
+    to_date: str   = None,
+    order: str     = "desc"
 ):
-    """
-    Customer ID varun tyachi date-by-date sagli records returns karto.
-    - Chronological order madhe sorted (date wise)
-    - Optional: from_date aani to_date filter
-    - Optional: order=asc (oldest first) or order=desc (latest first)
-
-    Example:
-      GET /customer/{id}/records
-      GET /customer/{id}/records?order=asc
-      GET /customer/{id}/records?from_date=2026-06-01&to_date=2026-06-30
-    """
     try:
         customer = await sheets_client.get_customer(customer_id)
         if not customer:
@@ -459,8 +413,7 @@ async def get_customer_records_by_date(
 
         txns = list(customer.transactions)
 
-        # --- Flexible date parser: accepts YYYY-MM-DD, YYYY/MM/DD, DD-MM-YYYY, DD/MM/YYYY ---
-        def _parse_date(date_str: str) -> datetime:
+        def _parse_filter_date(date_str: str) -> datetime:
             for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
                 try:
                     return datetime.strptime(date_str.strip(), fmt)
@@ -468,31 +421,23 @@ async def get_customer_records_by_date(
                     continue
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid date format '{date_str}'. Use YYYY-MM-DD or YYYY/MM/DD"
+                detail=f"Invalid date format '{date_str}'. Use YYYY-MM-DD"
             )
 
-        # --- Date range filter ---
         if from_date:
-            fd = _parse_date(from_date)
+            fd = _parse_filter_date(from_date)
             txns = [t for t in txns if t.date and (t.date.date() if isinstance(t.date, datetime) else datetime.min.date()) >= fd.date()]
 
         if to_date:
-            td = _parse_date(to_date)
+            td = _parse_filter_date(to_date)
             txns = [t for t in txns if t.date and (t.date.date() if isinstance(t.date, datetime) else datetime.max.date()) <= td.date()]
 
-
-        # --- Date-wise sort ---
         reverse_order = (order.lower() == "desc")
         def safe_sort_key(t):
-            try:
-                tid = int(t.id)
-            except:
-                tid = 0
-            t_dt = t.date if isinstance(t.date, datetime) else datetime.min
-            return (t_dt, tid)
+            return t.date if isinstance(t.date, datetime) else datetime.min
+
         txns.sort(key=safe_sort_key, reverse=reverse_order)
 
-        # --- Group by date ---
         from collections import OrderedDict
         grouped: dict = OrderedDict()
         for t in txns:
@@ -502,18 +447,28 @@ async def get_customer_records_by_date(
             grouped[date_key].append({
                 "id": str(t.id),
                 "jar": t.jar_count,
-                "jama": t.amount,       # Jama = Paid
-                "baki": t.manual_bill,  # Baki = Manual Bill added in this entry
+                "jama": t.amount,
+                "paid": t.amount,
+                "baki": t.manual_bill,
+                "pending": t.manual_bill,
+                "running_balance": t.pending,
                 "description": t.description or "",
                 "created_at": safe_iso(t.created_at)
             })
 
-        # --- Running totals ---
         rate = getattr(customer, 'rate', 25.0) or 25.0
-        total_jars   = sum(t.jar_count for t in txns)
-        total_paid   = sum(t.amount for t in txns if t.amount > 0)
-        total_pending = customer.pending
-        total_cost   = total_jars * rate
+        total_jars = sum(t.jar_count for t in txns)
+        total_paid = sum(t.amount for t in txns if t.amount > 0)
+        total_cost = total_jars * rate
+
+        # Accurate date range calculation
+        if txns:
+            valid_dates = [t.date for t in txns if isinstance(t.date, datetime)]
+            min_date_str = safe_date_str(min(valid_dates)) if valid_dates else None
+            max_date_str = safe_date_str(max(valid_dates)) if valid_dates else None
+        else:
+            min_date_str = None
+            max_date_str = None
 
         return {
             "customer_id": customer_id,
@@ -522,8 +477,8 @@ async def get_customer_records_by_date(
             "customer_address": customer.customer_address,
             "total_records": len(txns),
             "date_range": {
-                "from": from_date or (safe_date_str(txns[-1].date) if txns else None),
-                "to":   to_date   or (safe_date_str(txns[0].date) if txns else None)
+                "from": from_date or min_date_str,
+                "to":   to_date   or max_date_str
             },
             "records_by_date": [
                 {
@@ -545,81 +500,94 @@ async def get_customer_records_by_date(
         raise HTTPException(status_code=500, detail=f"Error fetching records: {str(e)}")
 
 
-
-
-# 📥 Download PDF — all customers included!
+# 📥 Download PDF report
 @router.get("/download-pdf")
-async def download_pdf(db = Depends(get_db)):
+async def download_pdf():
     try:
-        # 1. Fetch data
-        customers = await get_all_customers(db, exclude_monthly=False)
-        
-        # 2. Create Buffer
+        customers = await get_all_customers(exclude_monthly=False)
         buffer = io.BytesIO()
-        
-        # 3. Create PDF Doc
-        doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=landscape(A4),
+            leftMargin=30,
+            rightMargin=30,
+            topMargin=30,
+            bottomMargin=30
+        )
         elements = []
         
         styles = getSampleStyleSheet()
-        elements.append(Paragraph("Customer Data Report", styles['Title']))
-        
-        # 4. Table Data
-        data = [['Date', 'Name', 'Address', 'Phone', 'Status', 'Jars', 'Paid', 'Pending']]
+        elements.append(Paragraph("Dhansagar - Customer Ledger Report", styles['Title']))
+
+        normal_style = styles['Normal']
+        normal_style.fontSize = 8
+        normal_style.leading = 10
+
+        header_style = styles['Normal']
+        header_style.fontSize = 9
+        header_style.fontName = 'Helvetica-Bold'
+        header_style.textColor = colors.whitesmoke
+
+        data = [[
+            Paragraph("Date", header_style),
+            Paragraph("Name", header_style),
+            Paragraph("Address", header_style),
+            Paragraph("Phone", header_style),
+            Paragraph("Status", header_style),
+            Paragraph("Jars", header_style),
+            Paragraph("Paid", header_style),
+            Paragraph("Pending", header_style)
+        ]]
         
         for c in customers:
             date_str = safe_date_str(c.date)
             status = "Active" if c.success else "Pending"
             row = [
-                date_str,
-                c.customer_name,
-                (c.customer_address[:30] + '...') if c.customer_address and len(c.customer_address) > 30 else (c.customer_address or ""),
-                c.customer_number,
-                status,
-                str(c.jar),
-                f"Rs. {c.paid}",
-                f"Rs. {c.pending}"
+                Paragraph(date_str or "", normal_style),
+                Paragraph(str(c.customer_name or ""), normal_style),
+                Paragraph(str(c.customer_address or ""), normal_style),
+                Paragraph(str(c.customer_number or ""), normal_style),
+                Paragraph(status, normal_style),
+                Paragraph(str(c.jar or 0), normal_style),
+                Paragraph(f"Rs. {c.paid or 0.0}", normal_style),
+                Paragraph(f"Rs. {c.pending or 0.0}", normal_style)
             ]
             data.append(row)
             
-        # 5. Table Style
-        table = Table(data)
-        style = TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-        ])
-        table.setStyle(style)
+        # Total printable width is approx 780 for landscape A4
+        col_widths = [75, 110, 210, 95, 60, 50, 90, 90]
+        table = Table(data, colWidths=col_widths)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1A2B4C")),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+            ('TOPPADDING', (0, 0), (-1, 0), 6),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#F8F9FA")),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#D0D5DD")),
+        ]))
         elements.append(table)
         
-        # 6. Build
         doc.build(elements)
-        
         buffer.seek(0)
         return StreamingResponse(
             buffer,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=customers_report.pdf"}
         )
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating PDF: {str(e)}")
 
 
 # ❌ Delete customer
 @router.delete("/delete/{doc_id}")
-async def delete(doc_id: str, db = Depends(get_db)):
+async def delete(doc_id: str):
     try:
-        success = await delete_customer(doc_id, db)
+        success = await delete_customer(doc_id)
         if not success:
             raise HTTPException(status_code=404, detail="Customer not found")
-        return {"message": "Customer deleted"}
+        return {"message": "Customer deleted successfully"}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-

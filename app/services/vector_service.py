@@ -2,30 +2,6 @@ from datetime import datetime
 from app.db.sheets import sheets_client
 
 
-# Helper to parse date
-def parse_date(date_val):
-    if not date_val:
-        return datetime.now()
-    if isinstance(date_val, datetime):
-        return date_val
-    try:
-        return datetime.strptime(date_val, "%Y-%m-%d")
-    except ValueError:
-        try:
-            return datetime.fromisoformat(date_val)
-        except:
-            return datetime.now()
-
-# 🔵 Store customer in Google Sheets
-async def store_customer(data: dict, db=None):
-    return await sheets_client.store_customer(data)
-
-
-# ✏️ Update customer in Google Sheets
-async def update_customer(doc_id: str, data: dict, db=None):
-    return await sheets_client.update_customer(doc_id, data)
-
-
 def safe_iso(val):
     if not val:
         return None
@@ -40,8 +16,16 @@ def safe_date_str(val, fmt="%Y-%m-%d"):
         return val.strftime(fmt)
     return str(val)
 
+# 🔵 Store customer in Google Sheets
+async def store_customer(data: dict):
+    return await sheets_client.store_customer(data)
+
+# ✏️ Update customer in Google Sheets
+async def update_customer(doc_id: str, data: dict):
+    return await sheets_client.update_customer(doc_id, data)
+
 # 🔍 Search customer in Google Sheets
-async def search_customer(query: str, db=None):
+async def search_customer(query: str):
     res = await sheets_client.search_customers(query)
     formatted_results = []
     for customer in res:
@@ -52,7 +36,10 @@ async def search_customer(query: str, db=None):
                 "date": safe_date_str(t.date) or "",
                 "jar": t.jar_count,
                 "paid": t.amount,
-                "pending": t.pending
+                "jama": t.amount,
+                "pending": t.manual_bill,
+                "baki": t.manual_bill,
+                "running_balance": t.pending
             })
         item = {
             "id": customer.id,
@@ -68,24 +55,19 @@ async def search_customer(query: str, db=None):
             "created_at": safe_iso(customer.created_at),
             "updated_at": safe_iso(customer.updated_at),
             "transactions": formatted_txns,
-            "distance": 0.0 # Mock distance
+            "document": f"{customer.customer_name} | {customer.customer_address} | {customer.customer_number}"
         }
-        item['document'] = f"{customer.customer_name} | {customer.customer_address} | {customer.customer_number}"
         formatted_results.append(item)
     return formatted_results
 
-
-async def get_all_customers(db=None, exclude_monthly: bool = False, force_refresh: bool = False):
+async def get_all_customers(exclude_monthly: bool = False, force_refresh: bool = False):
     customers = await sheets_client.get_all_customers(exclude_monthly=exclude_monthly, force_refresh=force_refresh)
-    try:
-        customers.sort(key=lambda x: x.updated_at or x.created_at or datetime.min, reverse=True)
-    except:
-        pass
+    def sort_key(x):
+        dt = x.updated_at or x.created_at
+        return dt if isinstance(dt, datetime) else datetime.min
+    customers.sort(key=sort_key, reverse=True)
     return customers
 
-
 # ❌ Delete customer from Google Sheets
-async def delete_customer(doc_id: str, db=None):
+async def delete_customer(doc_id: str):
     return await sheets_client.delete_customer(doc_id)
-
-
