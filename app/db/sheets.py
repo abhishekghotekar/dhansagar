@@ -159,7 +159,14 @@ class GoogleSheetsClient:
                 return await asyncio.to_thread(func, *args, **kwargs)
             except Exception as e:
                 status_code = getattr(getattr(e, "response", None), "status_code", None)
-                if status_code in [429, 500, 502, 503, 504] or "APIError" in str(type(e)):
+                err_str = str(e)
+
+                # Never retry client errors (400 Bad Request, 403 Forbidden, 404 Not Found)
+                if status_code in [400, 403, 404] or any(code in err_str for code in ["[400]", "[403]", "[404]"]):
+                    raise e
+
+                # Retry transient server/rate errors
+                if status_code in [429, 500, 502, 503, 504] or any(code in err_str for code in ["[429]", "[500]", "[502]", "[503]", "[504]"]):
                     if attempt < max_retries - 1:
                         print(f"Google Sheets API rate/server error ({e}) on attempt {attempt+1}/{max_retries}. Retrying in {delay}s...")
                         await asyncio.sleep(delay)
@@ -655,16 +662,23 @@ class GoogleSheetsClient:
             return False
 
         # Delete customer's individual ledger sheet if exists
-        cust_sheet = await self._find_customer_worksheet_by_id(customer_id, customer.customer_name)
-        if cust_sheet:
-            try:
-                async with sheets_lock:
-                    await self._retry(self.spreadsheet.del_worksheet, cust_sheet)
+        try:
+            cust_sheet = await self._find_customer_worksheet_by_id(customer_id, customer.customer_name)
+            if cust_sheet:
+                # Verify the sheet still exists in the workbook before attempting deletion
+                all_current_sheets = await self._retry(self.spreadsheet.worksheets)
+                current_sheet_ids = {s.id for s in all_current_sheets}
+                if cust_sheet.id in current_sheet_ids:
+                    async with sheets_lock:
+                        await self.spreadsheet.del_worksheet(cust_sheet)
                 self._invalidate_worksheets_cache()
                 if customer_id in self._worksheet_cache:
                     del self._worksheet_cache[customer_id]
-            except Exception as e:
-                print(f"Error deleting customer worksheet: {e}")
+        except Exception as e:
+            print(f"Notice: Individual sheet not deleted for customer (may already be removed): {e}")
+            self._invalidate_worksheets_cache()
+            if customer_id in self._worksheet_cache:
+                del self._worksheet_cache[customer_id]
 
         # Delete from customers worksheet
         row_idx = customer.row_idx
