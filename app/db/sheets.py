@@ -185,12 +185,12 @@ class GoogleSheetsClient:
                 return False
 
             self._last_init_attempt_time = now
-            sheet_id = GOOGLE_SHEET_ID
-            creds_json = GOOGLE_SERVICE_ACCOUNT_DICT
-            creds_path = GOOGLE_SERVICE_ACCOUNT_JSON
+            sheet_id = (os.getenv("GOOGLE_SHEET_ID") or GOOGLE_SHEET_ID or "").strip()
+            creds_json = (os.getenv("GOOGLE_SERVICE_ACCOUNT_DICT") or GOOGLE_SERVICE_ACCOUNT_DICT or "").strip()
+            creds_path = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or GOOGLE_SERVICE_ACCOUNT_JSON or "google-credentials.json").strip()
 
             if not sheet_id:
-                print("GOOGLE_SHEET_ID is not configured.")
+                print("GOOGLE_SHEET_ID is not configured. Please set the GOOGLE_SHEET_ID environment variable in your deployment dashboard.")
                 return False
 
             scopes = [
@@ -201,12 +201,24 @@ class GoogleSheetsClient:
             try:
                 def get_creds():
                     if creds_json:
-                        info = json.loads(creds_json)
+                        raw_json = creds_json
+                        if (raw_json.startswith("'") and raw_json.endswith("'")) or (raw_json.startswith('"') and raw_json.endswith('"') and not raw_json.endswith('"}')):
+                            raw_json = raw_json[1:-1]
+                        info = json.loads(raw_json)
                         return Credentials.from_service_account_info(info, scopes=scopes)
-                    elif creds_path and os.path.exists(creds_path):
-                        return Credentials.from_service_account_file(creds_path, scopes=scopes)
-                    else:
-                        raise Exception("Google credentials not found")
+
+                    possible_paths = [
+                        creds_path,
+                        os.path.join(os.getcwd(), creds_path),
+                        os.path.join(os.getcwd(), "google-credentials.json"),
+                        "/etc/secrets/google-credentials.json",
+                        os.path.join(os.path.dirname(__file__), "..", "..", "google-credentials.json")
+                    ]
+                    for p in possible_paths:
+                        if p and os.path.exists(p):
+                            return Credentials.from_service_account_file(p, scopes=scopes)
+
+                    raise Exception("Google credentials not found. Please set GOOGLE_SERVICE_ACCOUNT_DICT or add google-credentials.json in Secret Files.")
 
                 creds = get_creds()
                 self.client = await asyncio.to_thread(gspread.authorize, creds)
