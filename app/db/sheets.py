@@ -12,6 +12,7 @@ from app.core.config import (
     GOOGLE_SERVICE_ACCOUNT_JSON,
     GOOGLE_SERVICE_ACCOUNT_DICT
 )
+from app.utils.formatter import normalize_phone
 
 # Lock for sheet operations to prevent race conditions during updates
 sheets_lock = asyncio.Lock()
@@ -501,13 +502,13 @@ class GoogleSheetsClient:
         if not self.initialized:
             raise Exception("Google Sheets backend not initialized.")
 
-        # Check duplicate phone number
-        cust_num = data.get("customer_number")
-        if cust_num and str(cust_num).strip():
+        # Check duplicate phone number with normalized digits
+        cust_num = normalize_phone(data.get("customer_number"))
+        if cust_num:
             existing = await self.get_all_customers()
             for c in existing:
-                if c.customer_number and c.customer_number.strip() == str(cust_num).strip():
-                    raise Exception(f"Customer with phone number '{cust_num}' already exists (Name: {c.customer_name}).")
+                if normalize_phone(c.customer_number) == cust_num:
+                    raise Exception(f"Customer with phone number '{data.get('customer_number')}' already exists (Name: {c.customer_name}).")
 
         doc_id = str(uuid.uuid4())
         now = datetime.now(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None)
@@ -1156,72 +1157,77 @@ class GoogleSheetsClient:
         return title
 
     async def sync_customer_sheet(self, customer_id: str):
-        await self.initialize()
-        if not self.initialized:
-            return False
-            
-        customer = await self.get_customer(customer_id)
-        if not customer:
-            return False
-            
-        sheet = await self._find_customer_worksheet_by_id(customer_id, customer.customer_name)
-        new_title = await self._get_unique_sheet_title(customer.customer_name, customer_id)
-        
-        async with sheets_lock:
-            if not sheet:
-                try:
-                    sheet = await self._retry(self.spreadsheet.add_worksheet, new_title, rows="1000", cols="5")
-                    self._invalidate_worksheets_cache()
-                    self._worksheet_cache[customer_id] = sheet
-                except Exception as e:
-                    print(f"Error creating customer worksheet {new_title}: {e}")
-                    return False
-            elif sheet.title != new_title:
-                try:
-                    await self._retry(sheet.update_title, new_title)
-                    self._invalidate_worksheets_cache()
-                    self._worksheet_cache[customer_id] = sheet
-                except Exception as e:
-                    print(f"Error updating customer worksheet title: {e}")
-                
-        txns = await self.get_transactions_by_customer(customer_id)
-        def safe_sort_key(t):
-            t_dt = t.date if isinstance(t.date, datetime) else datetime.min
-            return t_dt
-            
-        txns.sort(key=safe_sort_key)
-        
-        rows = [
-            [f"ID: {customer_id}", "", "", "", ""],
-            [f"Customer Name: {customer.customer_name}", f"Mobile: {customer.customer_number or ''}", "", "", ""],
-            ["", "", "", "", ""],
-            ["Date", "Jar", "Pending Amount", "Paid Amount", "Description"]
-        ]
-        
-        for t in txns:
-            date_str = t.date.strftime("%Y-%m-%d") if t.date else ""
-            jar = t.jar_count
-            desc = t.description or ""
-            paid_amount = t.amount
-            pending_amount = t.manual_bill
-            
-            rows.append([
-                date_str,
-                str(jar),
-                f"{pending_amount:.2f}",
-                f"{paid_amount:.2f}",
-                desc
-            ])
-            
-        async with sheets_lock:
-            try:
-                await self._retry(sheet.clear)
-                await self._retry(sheet.update, "A1", rows)
-            except Exception as e:
-                print(f"Error updating customer worksheet: {e}")
+        try:
+            await self.initialize()
+            if not self.initialized:
                 return False
                 
-        return True
+            customer = await self.get_customer(customer_id)
+            if not customer:
+                return False
+                
+            sheet = await self._find_customer_worksheet_by_id(customer_id, customer.customer_name)
+            new_title = await self._get_unique_sheet_title(customer.customer_name, customer_id)
+            
+            async with sheets_lock:
+                if not sheet:
+                    try:
+                        sheet = await self._retry(self.spreadsheet.add_worksheet, new_title, rows="1000", cols="5")
+                        self._invalidate_worksheets_cache()
+                        self._worksheet_cache[customer_id] = sheet
+                    except Exception as e:
+                        # Gracefully handle 200 sheets limit
+                        print(f"Notice: Individual sheet not created for {new_title} (may have reached max sheets): {e}")
+                        return False
+                elif sheet.title != new_title:
+                    try:
+                        await self._retry(sheet.update_title, new_title)
+                        self._invalidate_worksheets_cache()
+                        self._worksheet_cache[customer_id] = sheet
+                    except Exception as e:
+                        print(f"Error updating customer worksheet title: {e}")
+                    
+            txns = await self.get_transactions_by_customer(customer_id)
+            def safe_sort_key(t):
+                t_dt = t.date if isinstance(t.date, datetime) else datetime.min
+                return t_dt
+                
+            txns.sort(key=safe_sort_key)
+            
+            rows = [
+                [f"ID: {customer_id}", "", "", "", ""],
+                [f"Customer Name: {customer.customer_name}", f"Mobile: {customer.customer_number or ''}", "", "", ""],
+                ["", "", "", "", ""],
+                ["Date", "Jar", "Pending Amount", "Paid Amount", "Description"]
+            ]
+            
+            for t in txns:
+                date_str = t.date.strftime("%Y-%m-%d") if t.date else ""
+                jar = t.jar_count
+                desc = t.description or ""
+                paid_amount = t.amount
+                pending_amount = t.manual_bill
+                
+                rows.append([
+                    date_str,
+                    str(jar),
+                    f"{pending_amount:.2f}",
+                    f"{paid_amount:.2f}",
+                    desc
+                ])
+                
+            async with sheets_lock:
+                try:
+                    await self._retry(sheet.clear)
+                    await self._retry(sheet.update, "A1", rows)
+                except Exception as e:
+                    print(f"Error updating customer worksheet: {e}")
+                    return False
+                    
+            return True
+        except Exception as ex:
+            print(f"Non-critical notice in sync_customer_sheet for {customer_id}: {ex}")
+            return False
 
 
 # Global singleton Sheets client
