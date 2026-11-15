@@ -186,8 +186,22 @@ class GoogleSheetsClient:
 
             self._last_init_attempt_time = now
             sheet_id = (os.getenv("GOOGLE_SHEET_ID") or GOOGLE_SHEET_ID or "").strip()
-            creds_json = (os.getenv("GOOGLE_SERVICE_ACCOUNT_DICT") or GOOGLE_SERVICE_ACCOUNT_DICT or "").strip()
-            creds_path = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or GOOGLE_SERVICE_ACCOUNT_JSON or "google-credentials.json").strip()
+            
+            # Check multiple potential env vars for JSON dict content
+            creds_json = (
+                os.getenv("GOOGLE_SERVICE_ACCOUNT_DICT") or 
+                os.getenv("GOOGLE_CREDENTIALS_JSON") or 
+                os.getenv("GOOGLE_CREDENTIALS") or 
+                GOOGLE_SERVICE_ACCOUNT_DICT or 
+                ""
+            ).strip()
+
+            creds_path = (
+                os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or 
+                os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or 
+                GOOGLE_SERVICE_ACCOUNT_JSON or 
+                "google-credentials.json"
+            ).strip()
 
             if not sheet_id:
                 print("GOOGLE_SHEET_ID is not configured. Please set the GOOGLE_SHEET_ID environment variable in your deployment dashboard.")
@@ -200,13 +214,24 @@ class GoogleSheetsClient:
 
             try:
                 def get_creds():
-                    if creds_json:
-                        raw_json = creds_json
-                        if (raw_json.startswith("'") and raw_json.endswith("'")) or (raw_json.startswith('"') and raw_json.endswith('"') and not raw_json.endswith('"}')):
-                            raw_json = raw_json[1:-1]
-                        info = json.loads(raw_json)
+                    # 1. If raw JSON string was passed directly in creds_path
+                    candidate_json = None
+                    if creds_path.startswith("{") and creds_path.endswith("}"):
+                        candidate_json = creds_path
+                    elif creds_json:
+                        candidate_json = creds_json
+
+                    if candidate_json:
+                        raw = candidate_json.strip()
+                        if (raw.startswith("'") and raw.endswith("'")) or (raw.startswith('"') and raw.endswith('"') and not raw.endswith('"}')):
+                            raw = raw[1:-1]
+                        info = json.loads(raw)
+                        # Fix escaped newlines in private_key if present
+                        if "private_key" in info and isinstance(info["private_key"], str) and "\\n" in info["private_key"]:
+                            info["private_key"] = info["private_key"].replace("\\n", "\n")
                         return Credentials.from_service_account_info(info, scopes=scopes)
 
+                    # 2. Check explicit paths
                     possible_paths = [
                         creds_path,
                         os.path.join(os.getcwd(), creds_path),
@@ -215,10 +240,31 @@ class GoogleSheetsClient:
                         os.path.join(os.path.dirname(__file__), "..", "..", "google-credentials.json")
                     ]
                     for p in possible_paths:
-                        if p and os.path.exists(p):
+                        if p and os.path.isfile(p):
                             return Credentials.from_service_account_file(p, scopes=scopes)
 
-                    raise Exception("Google credentials not found. Please set GOOGLE_SERVICE_ACCOUNT_DICT or add google-credentials.json in Secret Files.")
+                    # 3. Check any .json file in Render's /etc/secrets directory
+                    if os.path.isdir("/etc/secrets"):
+                        try:
+                            for fname in os.listdir("/etc/secrets"):
+                                if fname.endswith(".json"):
+                                    fpath = os.path.join("/etc/secrets", fname)
+                                    try:
+                                        return Credentials.from_service_account_file(fpath, scopes=scopes)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+
+                    # Diagnostic message
+                    secrets_dir_exists = os.path.isdir("/etc/secrets")
+                    secrets_contents = os.listdir("/etc/secrets") if secrets_dir_exists else "Directory not found"
+                    raise Exception(
+                        f"Google credentials not found.\n"
+                        f"- GOOGLE_SERVICE_ACCOUNT_DICT is empty: {not bool(creds_json)}\n"
+                        f"- /etc/secrets contents: {secrets_contents}\n"
+                        f"- Current working dir files: {[f for f in os.listdir('.') if f.endswith('.json') or f.endswith('.txt')]}"
+                    )
 
                 creds = get_creds()
                 self.client = await asyncio.to_thread(gspread.authorize, creds)
